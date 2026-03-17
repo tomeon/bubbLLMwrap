@@ -6,7 +6,16 @@ on:
 
 jobs:
   flake-check:
-    runs-on: ubuntu-latest
+    name: Flake check (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64-linux
+            runner: ubuntu-latest
+          - arch: aarch64-linux
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -18,52 +27,7 @@ jobs:
 
       - name: Check flake
         run: |
-          nix flake check \
-            --system x86_64-linux \
+          NIXPKGS_ALLOW_UNFREE=1 nix flake check \
+            --impure \
             --print-build-logs \
             --show-trace
-
-      - name: Build default package
-        run: |
-          nix build .#default \
-            --system x86_64-linux \
-            --no-link \
-            --print-build-logs \
-            --show-trace
-
-      - name: Build all sandbox packages
-        run: |
-          for package in claude-sandbox-{bare,nix,go,python,rust,cpp,js,devops}; do
-            echo "Building $package..."
-            if nix build .#$package \
-              --system x86_64-linux \
-              --no-link \
-              --print-build-logs \
-              --show-trace; then
-              echo "✓ $package built successfully"
-            else
-              echo "✗ $package failed to build"
-              exit 1
-            fi
-          done
-
-      - name: Test development shell
-        run: |
-          nix build .#devShells.x86_64-linux.default \
-            --no-link \
-            --print-build-logs \
-            --show-trace
-
-      - name: Test flake outputs
-        run: |
-          nix eval .#lib.x86_64-linux \
-            --apply 'lib: builtins.attrNames lib.profiles' \
-            --print-build-logs \
-            --show-trace
-
-      - name: Summary
-        run: |
-          echo "All x86_64-linux checks passed"
-          echo "Flake validated successfully"
-          echo "All packages built without errors"
-          echo "Development shell is accessible"

@@ -1,247 +1,141 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
-## Project Overview
+## Project overview
 
-This is a Nix flake that creates a secure bubblewrap sandbox environment specifically designed for running Claude Code. The project uses a profile-based architecture to provide language-specific development environments with network isolation. The flake is designed to be easily imported and extended with custom profiles in other projects.
+**bubbLLMwrap** is a Nix flake that runs LLM coding CLIs (Claude Code and Codex)
+inside a [bubblewrap](https://github.com/containers/bubblewrap) sandbox. It
+provides filesystem isolation, seccomp system-call filtering, and an allowlist
+HTTP proxy. Environments are assembled from composable **profiles** using a
+NixOS-style module system, and the flake is meant to be imported and extended by
+other flakes.
+
+This project was forked from `matgawin/bubblewrap-claude` and substantially
+rebuilt; the function-based API (`mkSandbox`, `deriveProfile`, `mkDevShell`) from
+that project no longer exists. The interface is now a module schema.
 
 ## Architecture
 
-The flake defines sandboxed environments using:
-- **Bubblewrap**: Provides process isolation and filesystem sandboxing
-- **Nix**: Manages dependencies and creates reproducible environments
-- **Claude Code**: Pre-installed and aliased with `--dangerously-skip-permissions`
-- **Profile System**: Structured configuration for language-specific toolchains
+The flake is built with [flake-parts](https://flake.parts/). The two
+user-facing concepts are:
 
-Key components:
-- `lib/sandbox/default.nix`: Core sandbox script generation
-- `lib/default.nix`: Extensible API functions (mkSandbox, mkDevShell, deriveProfile)
-- `lib/sandbox/profiles.nix`: Language-specific profile definitions
-- `lib/proxy/`: HTTP proxy with allowlist functionality
-- `flake.nix`: Main flake configuration and package exports
+- **profiles** (`config.profiles.<name>`) — named, mix-and-match modules
+  (deferred modules) describing a group of related options (an LLM, a language
+  toolchain, a set of tools).
+- **environments** (`config.environments.<name>`) — a profile composition that
+  produces a runnable sandbox `script`. Each environment's `script` is exported
+  as a `packages.<system>.<name>` output.
 
-## Profile-Based Architecture
+Key files:
 
-Profiles are structured configurations containing:
-- `name`: Profile identifier
-- `packages`: List of Nix packages to include
-- `env`: Environment variables
-- `preStartHooks`: Array of shell commands to execute at sandbox startup
-- `args`: Additional bubblewrap arguments (for cache binds, etc.)
-- `allowList`: List of domains allowed through HTTP proxy
-- `customPrompt`: Custom system prompt for Claude Code
+- `flake.nix`: flake-parts entrypoint. Declares systems, imports the flake
+  module and packages, sets up the `dev` partition (dev shell, formatter,
+  checks), and configures the project's own `bubbllmwrap` environments.
+- `nix/modules/flake/default.nix`: the flake-parts integration module exported
+  as `flakeModules.bubbllmwrap` (and `.default`). Adds the `perSystem.bubbllmwrap`
+  option and maps each environment to a package output.
+- `nix/lib/modules/options.nix`: the sandbox option schema (`profiles`,
+  `environments.<name>.{packages,env,args,hooks,llm,proxy,seccomp,extend,script,…}`).
+  This is the source of truth for `docs/OPTIONS.md`.
+- `nix/lib/modules/eval-args.nix`: assembles the module list and `specialArgs`
+  (notably `modulesPath`) for evaluation.
+- `nix/pkgs/eval-sandbox/default.nix`: backs `lib.<system>.evalSandbox`, the
+  entrypoint for consumers not using flake-parts.
+- `nix/modules/bubbllmwrap/canned.nix`: auto-discovers every profile under
+  `profiles/` and builds the canned `<llm>-<language>` environments as the
+  cross-product of LLM and language profiles.
+- `nix/modules/bubbllmwrap/profiles/`: the built-in profiles, grouped into
+  `llm/`, `language/`, and `tooling/`.
+- `nix/pkgs/`: the sandbox launcher (`sandbox/`), the glider proxy
+  (`sandbox-proxy/`), the `apply-seccomp` wrapper, and supporting packages.
 
-Base profile (`base`) provides core utilities, and other profiles extend it using `deriveProfile`.
+## Profiles and environments
 
-## Extensible API
+Built-in profiles:
 
-The flake exports functions for creating and customizing sandboxes:
+- LLM: `claude-code`, `codex` (both import `basic-tooling`)
+- Tooling: `basic-tooling` (base utilities, git/jj config binds), `devops`
+- Language: `cpp`, `go`, `js`, `nix`, `python`, `rust`
 
-### Core Functions
-- `mkSandbox profile`: Create sandbox from profile specification
-- `mkDevShell { packages, shellHook }`: Create extensible development shell
-- `deriveProfile baseProfile extensions`: Extend existing profile
-- `profiles`: Access to predefined language-specific profiles
+`canned.nix` produces the cross-product environments `<llm>-<language>`, e.g.
+`claude-code-go`, `codex-python`. There is **no** bare `claude-code`/`codex`
+environment and **no** default package — environments are always named
+`<llm>-<language>`.
 
-### Profile Structure
+An environment is defined by importing profiles and overriding options:
+
 ```nix
-{
-  name = "profile-name";
-  packages = with pkgs; [ tool1 tool2 ];
-  env = { VAR = "value"; };
-  preStartHooks = [  # optional
-    ''export SECRET="$(cat /path/to/secret)"''
-    ''echo "Setup complete"''
-  ];
-  args = [ "--ro-bind-try /cache /cache" ];
-  allowList = ["api.example.com" "cdn.example.com"];  # optional
-  customPrompt = "You are an expert in...";  # optional
-}
+environments.my-env = {config, pkgs, ...}: {
+  imports = with config.profiles; [claude-code go];
+  packages = with pkgs; [air];
+  proxy.allowList = ["proxy.golang.org"];
+};
 ```
 
-## Available Profiles
+Use `config.environments.<name>.extend [ module… ]` to derive a new environment
+from an existing one without redefining it.
 
-### Language Development Profiles
-- **base**: Core development tools (git, vim, ripgrep, etc.)
-- **bare**: Minimal environment (bash, coreutils only)
-- **nix**: Nix development (nix, alejandra) with `/nix` bind
-- **go**: Go development with module cache binding
-- **python**: Python development with pip/poetry/uv cache binding
-- **rust**: Rust development with cargo cache binding
-- **cpp**: C++ development with ccache binding
-- **js**: JavaScript/TypeScript with npm/yarn/pnpm/bun cache binding
-- **devops**: DevOps tools (docker, kubectl, terraform) with config binding
+### Option conventions
 
-### Cache Management
-Each profile automatically binds appropriate cache directories:
-- Go: `~/go/pkg/mod`
-- Python: `~/.cache/pip`, `~/.cache/pypoetry`, `~/.cache/uv`
-- Rust: `~/.cargo/registry`, `~/.cargo/git`
-- JavaScript: `~/.npm`, `~/.yarn`, `~/.bun`, pnpm store
-- DevOps: `~/.kube`, `~/.aws`, `~/.cache/helm`, `~/.terraform.d`
+- `args` and `env` values accept either a plain string or a
+  `{ value; quote; }` submodule. `quote = true` shell-quotes the value; leave it
+  `false` (the default) when you want shell interpolation (e.g. `~` or `$VAR`).
+- `hooks.{pre,post}` run on the host before/after `bwrap`; `hooks.{enter,exit}`
+  run inside the sandbox.
+- `proxy.allowList` is the set of domains reachable from inside the sandbox;
+  everything else is rejected by glider.
+- `seccomp.enable` (default `true`) runs the CLI under `apply-seccomp`.
 
 ## Commands
 
-### Development Environment
 ```bash
-# Enter development shell
-nix develop
-# or with direnv
-direnv allow
+# Enter the dev shell (formatter, linters, helper commands)
+nix develop          # or: direnv allow
 
-# Run base sandbox in current directory
-nix run
+# Run a canned environment in the current directory
+nix run .#claude-code-go
 
-# Run sandbox in specific directory
-nix run .#claude-sandbox [directory]
+# Allow unfree (Claude Code) if your Nix config doesn't already
+NIXPKGS_ALLOW_UNFREE=1 nix run --impure .#claude-code-go
+
+# Run against a specific project directory
+nix run .#claude-code-go -- --sandbox-project-dir /path/to/project
+
+# List all environments / packages
+nix flake show
+
+# Format the tree (treefmt: alejandra, prettier, shfmt, shellcheck)
+nix fmt
+
+# Run the VM tests
+nix flake check
+nix build .#checks.x86_64-linux.eval-sandbox -L
 ```
 
-### Language-Specific Profiles
+## Module options documentation
+
+`docs/OPTIONS.md` is **generated** from `nix/lib/modules/options.nix`. After
+changing any option, regenerate and commit it:
+
 ```bash
-# Available profiles
-nix run .#claude-sandbox-bare      # Minimal environment
-nix run .#claude-sandbox-nix       # Nix development
-nix run .#claude-sandbox-go        # Go development
-nix run .#claude-sandbox-python    # Python development
-nix run .#claude-sandbox-rust      # Rust development
-nix run .#claude-sandbox-cpp       # C++ development
-nix run .#claude-sandbox-js        # JavaScript/TypeScript
-nix run .#claude-sandbox-devops    # DevOps tooling
+nix build .#docs     # builds the CommonMark output
+# or, inside the dev shell:
+mkdocs               # builds .#docs and installs it to docs/OPTIONS.md
 ```
 
-### Inside the Sandbox
-```bash
-# Claude Code is aliased and ready to use
-claude
+Do not hand-edit `docs/OPTIONS.md` (it is also excluded from prettier).
 
-# Available in all profiles:
-# - Version control: git, jujutsu
-# - Text processing: ripgrep, fd, jq, yq, less
-# - File operations: tree, rsync, zip/unzip, tar, gzip
-# - System tools: bash, coreutils, procps, which, file
-# - Editor: vim with man pages
-```
+## Conventions
 
-## Importing and Extending
-
-### Basic Import
-```nix
-{
-  inputs.bubblewrap-claude.url = "github:matgawin/bubblewrap-claude";
-
-  outputs = {nixpkgs, bubblewrap-claude, ...}: let
-    system = "x86_64-linux";
-    bwLib = bubblewrap-claude.lib.${system};
-  in {
-    packages.${system}.my-sandbox = bwLib.mkSandbox {
-      name = "my-project";
-      packages = with pkgs; [ docker kubectl terraform ];
-      env = { PROJECT_ENV = "development"; };
-    };
-  };
-}
-```
-
-### Extending Existing Profiles
-```nix
-let
-  customGoProfile = bwLib.deriveProfile bwLib.profiles.go {
-    name = "go-web";
-    packages = with pkgs; [ air templ ];
-    env = { GO_ENV = "development"; };
-    preStartHooks = [
-      ''export API_KEY="$(cat /run/secrets/go-api-key)"''
-      ''echo "Go web environment ready"''
-    ];
-    args = [ "--ro-bind-try /home/$USER/.config/air /home/$USER/.config/air" ];
-  };
-in {
-  packages.${system}.go-web = bwLib.mkSandbox customGoProfile;
-}
-```
-
-### Extended Development Shell
-```nix
-devShells.${system}.default = bwLib.mkDevShell {
-  packages = with pkgs; [ docker kubectl terraform ];
-  shellHook = ''
-    echo "Custom development environment loaded!"
-    echo "Available sandboxes:"
-    echo "  nix run .#claude-sandbox-go"
-    echo "  nix run .#claude-sandbox-js"
-    echo "  nix run .#fullstack"
-  '';
-};
-```
-
-## Security Model
-
-The sandbox enforces strict isolation while maintaining development workflow:
-
-### Process Isolation
-- Complete namespace isolation with `--unshare-all`
-- Runs as host user but with restricted capabilities
-- Process tree isolation from host system
-
-### Filesystem Access
-- Project directory: read-write access to current/specified directory
-- Temporary directory: isolated `/tmp` for each sandbox session
-- System directories: read-only access to `/nix`, `/etc` (controlled)
-- Cache directories: read-only binding for language-specific caches
-- Host configuration: `~/.claude.json` mounted if present
-
-### Network Configuration
-- Custom `/etc/hosts`
-- Controlled DNS resolution via custom `resolv.conf`
-- HTTP proxy with domain allowlist filtering (port 56789)
-- Network access enabled for API calls while maintaining filesystem isolation
-- Profile-specific API endpoint configuration
-- All non-whitelisted domains blocked with 403 response
-
-### Environment Control
-- Telemetry and auto-updates disabled via environment variables
-- Language-specific environment setup (PATH, cache locations, etc.)
-- Custom environment variables per profile
-- Pre-start hooks for runtime secret loading and dynamic configuration
-- Inheritance control for sensitive variables (API keys)
-- Custom system prompts via profile configuration
-
-## Debugging and Development
-
-### Profile Development
-When creating new profiles, use the base profile structure:
-```nix
-myProfile = bwLib.deriveProfile bwLib.base {
-  name = "my-tool";
-  packages = with pkgs; [ my-tool ];
-  env = { MY_TOOL_CONFIG = "/tmp/config"; };
-  preStartHooks = [
-    ''export MY_API_KEY="$(cat /run/secrets/my-tool-key)"''
-    ''echo "My-tool environment initialized"''
-  ];
-  args = [ "--ro-bind-try /home/$USER/.my-tool /home/$USER/.my-tool" ];
-  allowList = ["api.mytool.com" "cdn.mytool.com"];
-  customPrompt = "You are an expert in my-tool development...";
-};
-```
-
-### Common Patterns
-- Use `--ro-bind-try` for optional cache directories
-- Bind configuration directories when tools expect them in `$HOME`
-- Set tool-specific environment variables for cache locations in `/tmp`
-- Include language servers and formatters in development profiles
-- Use pre-start hooks to load secrets at runtime from sops-nix or other secret management systems
-- Validate environment setup in pre-start hooks with conditional logic
-
-### Testing Profiles
-```bash
-# Test profile in isolation
-nix run .#my-custom-sandbox /tmp/test-project
-
-# Check available tools
-nix run .#my-custom-sandbox -- which my-tool
-
-# Verify cache bindings
-nix run .#my-custom-sandbox -- ls -la ~/.cache/
-```
+- The `dev` partition isolates contributor-only inputs (devshell, treefmt,
+  checks) so consumers of the flake don't pull them in. Dev-only outputs
+  (`checks`, `devShells`, `formatter`) live there.
+- New profiles go under `nix/modules/bubbllmwrap/profiles/<group>/<name>.nix`
+  and are auto-discovered by `canned.nix` — add the name to the `language`/`llm`
+  lists in `canned.nix` if it should participate in the canned cross-product.
+- Read-only cache/config binds use `--ro-bind-try` so a missing host path is not
+  an error.
+- See `docs/HACKING.md` for contributor workflows and `TODO.md` for planned
+  hardening work (mandatory deny paths, proxy env fixes, symlink validation).
