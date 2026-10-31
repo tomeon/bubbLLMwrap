@@ -30,24 +30,22 @@
           "--dangerously-skip-permissions"
 
           "--disallowedTools"
-          (lib.escapeRegex (lib.concatStringsSep "," llm.config.disallowedTools))
+          (lib.escapeShellArg (lib.concatStringsSep "," llm.config.disallowedTools))
 
           "--append-system-prompt"
           (lib.escapeShellArg llm.config.prompt)
         ];
       };
 
-      args = [
-        "--bind-try"
-        "~/.claude"
-        "~/.claude"
-
-        "--bind-try"
-        "~/.claude.json"
-        "~/.claude.json"
-      ];
+      # Sandbox-owned config and login state, not the host's `~/.claude` and
+      # `~/.claude.json`: the host CLI runs hooks and MCP server commands from
+      # those, so a writable bind would let the sandbox plant commands that run
+      # unsandboxed later. `CLAUDE_CONFIG_DIR` moves `.claude.json` into the
+      # same directory.
+      filesystem.stateDirs.claude-code.target = "~/.claude";
 
       env = {
+        CLAUDE_CONFIG_DIR = "~/.claude";
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
         DISABLE_AUTOUPDATER = "1";
         DISABLE_ERROR_REPORTING = "1";

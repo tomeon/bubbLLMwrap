@@ -30,11 +30,13 @@
         #"ab.chatgpt.com"
       ];
 
-      args = [
-        "--bind-try"
-        "~/.codex"
-        "~/.codex"
-      ];
+      # Sandbox-owned config and login state, not the host's `~/.codex`: the
+      # host CLI runs `notify`, MCP server, and hook commands from its config,
+      # so a writable bind would let the sandbox plant commands that run
+      # unsandboxed later.
+      filesystem.stateDirs.codex.target = "~/.codex";
+
+      env.CODEX_HOME = "~/.codex";
     };
   };
 }

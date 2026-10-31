@@ -1,11 +1,15 @@
 {self, ...}: {
-  perSystem = {config, ...}: {
+  perSystem = {
+    bubbllmwrapScope,
+    config,
+    ...
+  }: {
     checks = {
-      eval-sandbox = config.legacyPackages.callPackage ./checks/eval-sandbox.nix {
+      eval-sandbox = bubbllmwrapScope.callPackage ./checks/eval-sandbox.nix {
         inherit (config) bubbllmwrap;
       };
 
-      options-docs = config.legacyPackages.callPackage ./checks/options-docs.nix {
+      options-docs = bubbllmwrapScope.callPackage ./checks/options-docs.nix {
         inherit self;
       };
     };

@@ -19,8 +19,8 @@ $ nix build .#docs
 ```
 
 This builds the CommonMark output as a store path. From inside the dev shell
-the `mkoptdocs` builds `.#docs` and installs the result over the SCM-tracked
-copy at `docs/OPTIONS.md`:
+the `mkoptdocs` command builds `.#docs` and installs the result over the
+SCM-tracked copy at `docs/OPTIONS.md`:
 
 ```shell-session
 $ mkoptdocs
@@ -44,7 +44,7 @@ $ nix fmt
 
 ## Tests
 
-NixOS VM tests live under [`nix/checks`]().
+NixOS VM tests live under [`nix/checks`](../nix/checks). They need KVM.
 
 Run the whole suite:
 
@@ -70,3 +70,9 @@ See [`nix/checks/README.md`](../nix/checks/README.md) for what the tests cover.
 | `nix/modules/bubbllmwrap/profiles/`  | built-in profiles (`llm/`, `language/`, `tooling/`)                                  |
 | `nix/modules/bubbllmwrap/canned.nix` | auto-discovers profiles and builds the `<llm>-<language>` environments               |
 | `nix/pkgs/`                          | the sandbox launcher, glider proxy, `apply-seccomp` wrapper, and supporting packages |
+
+## Contributor sandbox
+
+`nix run .#devshellm` starts a Codex sandbox with this project's dev shell
+loaded. It is defined in the `dev` partition (`flake.nix`) and exported as an
+app rather than a package, so consumers never evaluate it.

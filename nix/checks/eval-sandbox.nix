@@ -9,6 +9,22 @@
   allowedHost = "allowed.host";
   blockedHost = "blocked.host";
 
+  # Exits 0 if TIOCSTI is refused with EPERM, 1 if it succeeds. Run under
+  # `script` so the probe has a controlling terminal; otherwise TIOCSTI fails
+  # with ENOTTY whether or not it is filtered.
+  tiocstiProbe = writers.writePython3 "tiocsti-probe" {} ''
+    import errno
+    import fcntl
+    import sys
+    import termios
+
+    try:
+        fcntl.ioctl(0, termios.TIOCSTI, b"#")
+    except OSError as e:
+        sys.exit(0 if e.errno == errno.EPERM else 2)
+    sys.exit(1)
+  '';
+
   # Create test environments containing a fake LLM that performs testing
   # assertions.
   envs = lib.flip lib.mapAttrs bubbllmwrap.environments (_: config:
@@ -90,6 +106,29 @@
               if (cd /nope) &>/dev/null; then
                 err "changing directory to forbidden path /nope is possible but should not be"
               fi
+
+              ${lib.optionalString env.config.filesystem.denyVcsMetadata ''
+                if touch .git/hooks/planted 2>/dev/null; then
+                  err "able to write to .git/hooks, which should be read-only"
+                fi
+              ''}
+
+              ${lib.concatMapStrings (dir: ''
+                target=${lib.escapeShellArg dir.target}
+                # shellcheck disable=SC2088
+                if [[ $target == '~/'* ]]; then
+                  target="$HOME/''${target#'~/'}"
+                fi
+                if ! touch "$target/.probe"; then
+                  err "state directory $target is not writable"
+                fi
+              '') (lib.filter (dir: dir.enable) (lib.attrValues env.config.filesystem.stateDirs))}
+
+              ${lib.optionalString env.config.seccomp.denyTerminalInjection ''
+                if ! script -qec ${tiocstiProbe} /dev/null </dev/null >/dev/null; then
+                  err "TIOCSTI was not refused with EPERM"
+                fi
+              ''}
 
               curl_with_http_code() {
                 curl -o /dev/null --retry 2 -f -S -s -L -m 5 -w '%{http_code}' "$@"
@@ -173,7 +212,7 @@ in
       machine.wait_until_succeeds("curl -f -s -S -L -m 5 http://${blockedHost}/")
 
       # Create test project
-      machine.succeed("mkdir -p /tmp/test-project")
+      machine.succeed("mkdir -p /tmp/test-project/.git/hooks")
       machine.succeed("echo 'test content' > /tmp/test-project/test.txt")
 
       # Test 1: Sandbox runs successfully

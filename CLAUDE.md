@@ -26,18 +26,20 @@ user-facing concepts are:
   toolchain, a set of tools).
 - **environments** (`config.environments.<name>`) — a profile composition that
   produces a runnable sandbox `script`. Each environment's `script` is exported
-  as a `packages.<system>.<name>` output.
+  as a `packages.<system>.<name>` output (unless its `enable` is `false`).
 
 Key files:
 
 - `flake.nix`: flake-parts entrypoint. Declares systems, imports the flake
-  module and packages, sets up the `dev` partition (dev shell, formatter,
-  checks), and configures the project's own `bubbllmwrap` environments.
+  module and packages, sets up `pkgs` (nixpkgs plus the Claude Code overlay),
+  sets up the `dev` partition (dev shell, formatter, checks, and the
+  `devshellm` contributor app), and configures the project's own `bubbllmwrap`
+  environments.
 - `nix/modules/flake/default.nix`: the flake-parts integration module exported
   as `flakeModules.bubbllmwrap` (and `.default`). Adds the `perSystem.bubbllmwrap`
   option and maps each environment to a package output.
 - `nix/lib/modules/options.nix`: the sandbox option schema (`profiles`,
-  `environments.<name>.{packages,env,args,hooks,llm,proxy,seccomp,extend,script,…}`).
+  `environments.<name>.{packages,env,args,hooks,llm,proxy,seccomp,filesystem,extend,script,…}`).
   This is the source of truth for `docs/OPTIONS.md`.
 - `nix/lib/modules/eval-args.nix`: assembles the module list and `specialArgs`
   (notably `modulesPath`) for evaluation.
@@ -48,8 +50,10 @@ Key files:
   cross-product of LLM and language profiles.
 - `nix/modules/bubbllmwrap/profiles/`: the built-in profiles, grouped into
   `llm/`, `language/`, and `tooling/`.
-- `nix/pkgs/`: the sandbox launcher (`sandbox/`), the glider proxy
-  (`sandbox-proxy/`), the `apply-seccomp` wrapper, and supporting packages.
+- `nix/pkgs/`: the sandbox launcher (`sandbox/`, with shared shell functions
+  in `sandbox-lib/`), the glider proxy (`sandbox-proxy/`), the `apply-seccomp`
+  wrapper, the whole-sandbox seccomp filter (`sandbox-seccomp-filter/`), and
+  supporting packages.
 
 ## Profiles and environments
 
@@ -60,9 +64,8 @@ Built-in profiles:
 - Language: `cpp`, `go`, `js`, `nix`, `python`, `rust`
 
 `canned.nix` produces the cross-product environments `<llm>-<language>`, e.g.
-`claude-code-go`, `codex-python`. There is **no** bare `claude-code`/`codex`
-environment and **no** default package — environments are always named
-`<llm>-<language>`.
+`claude-code-go`, `codex-python`, plus bare `claude-code` and `codex`
+environments with `basic-tooling` only. There is **no** default package.
 
 An environment is defined by importing profiles and overriding options:
 
@@ -86,7 +89,17 @@ from an existing one without redefining it.
   run inside the sandbox.
 - `proxy.allowList` is the set of domains reachable from inside the sandbox;
   everything else is rejected by glider.
-- `seccomp.enable` (default `true`) runs the CLI under `apply-seccomp`.
+- `seccomp.enable` (default `true`) runs the CLI under `apply-seccomp`;
+  `seccomp.denyTerminalInjection` (default `true`) applies a separate filter
+  to the whole sandbox that blocks `TIOCSTI`/`TIOCLINUX`.
+- `filesystem.denyVcsMetadata` (default `true`) mounts every `.git`/`.jj`
+  found under the project read-only, including gitlink files.
+- `filesystem.stateDirs.<name>.target` gives the sandbox its own persistent
+  directory (on the host under `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap`).
+  The LLM profiles use it for their config instead of binding the host's
+  `~/.claude`/`~/.codex`, which the host CLI would execute commands from.
+- Environments are `submoduleWith { shorthandOnlyDefinesConfig = false; }`,
+  so a plain attrset definition may use `imports`.
 
 ## Commands
 
@@ -122,7 +135,7 @@ changing any option, regenerate and commit it:
 ```bash
 nix build .#docs     # builds the CommonMark output
 # or, inside the dev shell:
-mkdocs               # builds .#docs and installs it to docs/OPTIONS.md
+mkoptdocs            # builds .#docs and installs it to docs/OPTIONS.md
 ```
 
 Do not hand-edit `docs/OPTIONS.md` (it is also excluded from prettier).
@@ -131,11 +144,11 @@ Do not hand-edit `docs/OPTIONS.md` (it is also excluded from prettier).
 
 - The `dev` partition isolates contributor-only inputs (devshell, treefmt,
   checks) so consumers of the flake don't pull them in. Dev-only outputs
-  (`checks`, `devShells`, `formatter`) live there.
+  (`apps`, `checks`, `devShells`, `formatter`) live there.
 - New profiles go under `nix/modules/bubbllmwrap/profiles/<group>/<name>.nix`
   and are auto-discovered by `canned.nix` — add the name to the `language`/`llm`
   lists in `canned.nix` if it should participate in the canned cross-product.
 - Read-only cache/config binds use `--ro-bind-try` so a missing host path is not
   an error.
-- See `docs/HACKING.md` for contributor workflows and `TODO.md` for planned
-  hardening work (mandatory deny paths, proxy env fixes, symlink validation).
+- See `docs/HACKING.md` for contributor workflows and `TODO.md` for the threat
+  model and planned hardening work.

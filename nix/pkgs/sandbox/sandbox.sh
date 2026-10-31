@@ -18,6 +18,10 @@ unset __sandbox_var
 while (("$#" > 0)); do
   case "$1" in
   --sandbox-project-dir)
+    if (("$#" < 2)); then
+      printf 1>&2 -- 'Error: %s requires an argument\n' "$1"
+      exit 1
+    fi
     project_dir="$2"
     shift
     ;;
@@ -35,10 +39,12 @@ done
 
 project_dir="${project_dir:-"${PWD:-"$(pwd 2>/dev/null)"}"}"
 
-if ! [[ -d $project_dir ]]; then
-  printf 1>&2 -- 'Error: project directory %q does not exist\n' "$project_dir"
-  exit 1
-fi
+# Sets `__sandbox_project_dir` (absolute, symlinks kept: the in-sandbox mount
+# point) and `__sandbox_project_dir_real` (symlinks resolved: the bind source).
+__sandbox_resolve_project_dir "$project_dir" || exit
+
+# Keep `project_dir` available to the `pre` hook, now as an absolute path.
+project_dir="$__sandbox_project_dir"
 
 printf 1>&2 -- 'Starting bubblewrap sandbox in %q\n' "$project_dir"
 
@@ -62,11 +68,21 @@ if ! [[ -v __sandbox_bwrap_args ]]; then
   declare -ar __sandbox_bwrap_args=()
 fi
 
+# Sandbox-owned persistent directories (e.g. LLM config and login state).
+__sandbox_add_state_dir_args "$home"
+
 # Read-only binds that lock version-control metadata roots under the project.
-# These must land *after* the writable `--bind "$project_dir"` below so bwrap's
+# These must land *after* the writable project bind below so bwrap's
 # last-writer-wins ordering makes them stick.
-declare -a __sandbox_deny_args=()
-__sandbox_add_vcs_deny_args "$project_dir"
+__sandbox_add_vcs_deny_args "$__sandbox_project_dir_real" "$__sandbox_project_dir"
+
+# Seccomp filter for the whole sandbox; blocks terminal input injection
+# (TIOCSTI/TIOCLINUX). bwrap reads the compiled BPF program from this fd.
+declare -a __sandbox_seccomp_args=()
+if [[ -n ${SANDBOX_SECCOMP_FILTER:-} ]]; then
+  exec {__sandbox_seccomp_fd}<"$SANDBOX_SECCOMP_FILTER"
+  __sandbox_seccomp_args+=(--add-seccomp-fd "$__sandbox_seccomp_fd")
+fi
 
 declare -a __sandbox_bwrap_args_runtime=()
 
@@ -84,7 +100,10 @@ while (("$#" > 0)); do
   shift
 done
 
-set -x
+if [[ -n ${SANDBOX_DEBUG:-} ]]; then
+  set -x
+fi
+
 bwrap \
   --die-with-parent \
   --unshare-all \
@@ -107,10 +126,12 @@ bwrap \
   --ro-bind /etc/passwd /etc/passwd \
   --ro-bind /etc/group /etc/group \
   --clearenv \
+  "${__sandbox_seccomp_args[@]}" \
   "${__sandbox_bwrap_args[@]}" \
-  --bind "$project_dir" "$project_dir" \
+  "${__sandbox_state_args[@]}" \
+  --bind "$__sandbox_project_dir_real" "$__sandbox_project_dir" \
   "${__sandbox_deny_args[@]}" \
-  --chdir "$project_dir" \
+  --chdir "$__sandbox_project_dir" \
   --setenv HOME "$home" \
   --setenv USER "$__sandbox_user" \
   --setenv PATH "${SANDBOX_PATH?}" \

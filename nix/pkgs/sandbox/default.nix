@@ -13,6 +13,7 @@
   makeSandboxScanDir,
   apply-seccomp,
   sandbox-lib,
+  sandbox-seccomp-filter,
 }: {
   name,
   env,
@@ -22,7 +23,9 @@
   llmCmd,
   llmArgs,
   vcsMetadataDirs ? [],
+  stateDirs ? [],
   applySeccomp ? true,
+  denyTerminalInjection ? true,
   preHook ? "",
   enterHook ? "",
   exitHook ? "",
@@ -109,6 +112,11 @@
     fi
 
     declare -r __sandbox_bwrap_args
+
+    # Name/target pairs for sandbox-owned persistent directories.
+    declare -ar __sandbox_state_dirs=(
+      ${lib.escapeShellArgs (lib.concatMap (dir: [dir.name dir.target]) stateDirs)}
+    )
   '';
 
   llmMaybeWrapped = (lib.optional applySeccomp (lib.getExe apply-seccomp)) ++ [llmCmd];
@@ -244,6 +252,10 @@ in
       "--set"
       "SANDBOX_VCS_METADATA_DIRS"
       (lib.concatStringsSep ":" vcsMetadataDirs)
+
+      "--set"
+      "SANDBOX_SECCOMP_FILTER"
+      (lib.optionalString denyTerminalInjection "${sandbox-seccomp-filter}")
 
       "--set"
       "SANDBOX_VARS"

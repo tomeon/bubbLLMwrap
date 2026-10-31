@@ -41,6 +41,7 @@
         ];
 
         partitionedAttrs = lib.flip lib.genAttrs (lib.const "dev") [
+          "apps"
           "checks"
           "devShells"
           "formatter"
@@ -49,7 +50,11 @@
         partitions = {
           dev = {
             extraInputsFlake = ./dev;
-            module = {inputs, ...}: {
+            module = {
+              inputs,
+              lib,
+              ...
+            }: {
               imports = [
                 inputs.devshell.flakeModule
                 inputs.treefmt-nix.flakeModule
@@ -59,12 +64,22 @@
               perSystem = {
                 config,
                 pkgs,
-                system,
                 ...
               }: {
-                _module.args.pkgs = import inputs.nixpkgs {
-                  inherit system;
-                  overlays = [inputs.claude-code-nix.overlays.default];
+                # Contributor environment: Codex with this project's dev shell.
+                # Lives in the `dev` partition so that evaluating it doesn't
+                # pull the dev inputs into consumers' evaluations.
+                bubbllmwrap = bwrap: {
+                  environments.devshellm = lib.const {
+                    imports = [bwrap.config.profiles.codex];
+                    hooks.enter = "source ${config.devShells.default}/env.bash";
+                  };
+                };
+
+                apps.devshellm = {
+                  type = "app";
+                  program = lib.getExe config.bubbllmwrap.environments.devshellm.script;
+                  meta.description = "Codex sandbox with this project's dev shell";
                 };
 
                 devshells.default = {
@@ -117,29 +132,22 @@
 
         perSystem = {
           config,
-          lib,
-          self',
           system,
           ...
         }: {
-          lib = lib.filterAttrs (lib.const lib.isFunction) config.legacyPackages;
+          # Nixpkgs with the Claude Code overlay. Used for this flake's own
+          # environments and as the default `pkgs` for `lib.<system>.evalSandbox`.
+          _module.args.pkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [inputs.claude-code-nix.overlays.default];
+          };
 
-          bubbllmwrap = {
-            modulesPath,
-            pkgs,
-            ...
-          } @ bwrap: {
+          lib = {
+            inherit (config.legacyPackages) evalSandbox;
+          };
+
+          bubbllmwrap = {modulesPath, ...}: {
             imports = [(modulesPath + "/canned.nix")];
-
-            _module.args.pkgs = import inputs.nixpkgs {
-              inherit system;
-              overlays = [inputs.claude-code-nix.overlays.default];
-            };
-
-            environments.devshellm = lib.const {
-              imports = [bwrap.config.profiles.codex];
-              hooks.enter = "source ${self'.devShells.default}/env.bash";
-            };
           };
         };
 

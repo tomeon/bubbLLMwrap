@@ -71,7 +71,9 @@ in {
     perSystem = {config, ...}: let
       cfg = config.bubbllmwrap;
     in {
-      packages = lib.optionalAttrs cfg.includePackages (lib.mapAttrs (_: value: value.script) cfg.environments);
+      packages = lib.optionalAttrs cfg.includePackages (
+        lib.mapAttrs (_: env: env.script) (lib.filterAttrs (_: env: env.enable) cfg.environments)
+      );
     };
   };
 }

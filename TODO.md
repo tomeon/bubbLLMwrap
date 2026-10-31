@@ -3,7 +3,9 @@
 Hardening, correctness, and maintenance work. Items are marked `[ ]`
 (outstanding), `[~]` (partially done), or `[x]` (done — kept briefly for
 context, remove once stale). Severity tags (**high** / **medium** / **low**)
-are relative to the threat model below. Line references are as of `406203d`.
+are relative to the threat model below. Item numbers are stable; finished items
+move to [Completed](#completed). Line references are as of the commit that last
+changed this file.
 
 ## Threat model
 
@@ -21,59 +23,29 @@ that this project would have to keep up to date.
 
 ## Before merging to `main`
 
-- [ ] **Regenerate `docs/OPTIONS.md`.** It lacks the new `filesystem.*`
-      options, so the `options-docs` check fails.
-- [ ] **Run CI on this branch.** `.github/workflows/flake-check.yml:3-5`
-      triggers only on `push` to `main`, so this branch has never been through CI.
-      Add `pull_request` and `workflow_dispatch`. Also confirm the VM test gets KVM
-      on the `ubuntu-24.04-arm` runner.
-- [ ] **Fix the VCS-lock bugs in item 1.** As shipped, the lock does nothing
-      when the project path contains a symlink, and it leaves gitlink files
-      writable.
-- [ ] **Settle the public interface (item 12)** before consumers depend on it:
-      the `lib.<system>` output, the exported `packages`, the no-op
-      `environments.<name>.enable`, and the `freeformType`s.
-- [ ] **Make the docs match the code (item 13)**, in particular on whether bare
-      `claude-code`/`codex` environments exist.
+- [ ] **Watch the first CI run on this branch.** The VM test needs KVM. Confirm
+      the `ubuntu-24.04-arm` runner provides it. The VM test's new assertions (VCS
+      lock, state directories, `TIOCSTI`) were validated by running the same
+      environments outside a VM, not inside one.
+- [ ] **Decide on item 17** (logging in inside the sandbox), since the
+      `claude-code` and `codex` profiles no longer share the host's login.
+
+Everything else that was listed here is done; see [Completed](#completed).
 
 ## Outstanding
 
 ### [~] 1. Post-session execution via the project directory — **high**
 
-_(Was "mandatory deny paths".)_
-
 **Current state.** `filesystem.denyVcsMetadata` (on by default) finds every
-directory named in `filesystem.vcsMetadataDirs` (default `.git`, `.jj`) under
-the project at launch, and `--ro-bind`s each one over the writable project bind
-(`nix/pkgs/sandbox-lib/sandbox-lib.sh:184-264`, `nix/pkgs/sandbox/sandbox.sh:112`).
-Finding metadata roots by name, instead of keeping a per-file deny list, is the
-right approach. It covers hooks, `core.fsmonitor`, aliases, and anything else
-inside a root without listing them, and supporting a new VCS takes one list
-entry.
-
-**Confirmed bugs.** Reproduced with `bwrap` 0.9.0 and the shell functions
-sourced directly.
-
-- _The lock misses when the project path contains a symlink._ Each bind uses
-  the resolved (`realpath`) path as both source and destination, but the
-  project is mounted at the unresolved `$project_dir` (`sandbox.sh:111`). With
-  `/home → /var/home` (Fedora Atomic) or any symlinked checkout, the read-only
-  bind lands at a path the CLI never uses, and `.git/hooks/` stays writable.
-  Fix: bind `"$real"` at `"$project_dir${real#"$real_project_dir"}"`. Tested:
-  with that mapping, writes fail with `EROFS` and renaming the root fails with
-  `EBUSY`. See also item 4.
-- _Gitlink files stay writable._ In a submodule or linked worktree, `.git` is a
-  file. The code locks the file's `gitdir:` target but not the file itself
-  (`sandbox-lib.sh:250-262`). The CLI can rewrite it to point at a directory it
-  controls that contains a hostile `config`, and the next host-side
-  `git status` there follows it. Fix: also `--ro-bind` the gitlink file. srt
-  does this too ("its `.git` is a file: on Linux that file is blocked",
-  [srt README](https://github.com/anthropic-experimental/sandbox-runtime#readme)).
-- _A self-referencing gitlink crashes the launcher._ A `.git` file containing
-  `gitdir: .git` recurses until bash segfaults (exit 139). The launch fails
-  closed, but one session can break every later launch in that project. Fix:
-  don't follow a gitlink to another file, or record the path as seen before
-  recursing.
+entry named in `filesystem.vcsMetadataDirs` (default `.git`, `.jj`) under the
+project at launch and `--ro-bind`s it over the writable project bind
+(`nix/pkgs/sandbox-lib/sandbox-lib.sh`, `__sandbox_add_vcs_deny_args`). Gitlink
+files (submodules, linked worktrees) are locked along with the directory they
+point to. Binds are mapped from the resolved host path to the path the project
+is mounted at, so symlinked project paths are covered. Finding metadata roots by
+name, instead of keeping a per-file deny list, covers hooks, `core.fsmonitor`,
+aliases, and anything else inside a root without listing them, and supporting a
+new VCS takes one list entry.
 
 **Inherent limitation.** Read-only binds only protect metadata roots that exist
 at launch. They can't stop the CLI from creating new ones, and `bwrap` has no
@@ -103,19 +75,18 @@ subdirectory".
 
 - jj snapshots the working copy (writing to `.jj`) on almost every command, so
   with `.jj` locked most `jj` commands probably fail inside the sandbox (to
-  verify; `--ignore-working-copy` may be the workaround). The option's
-  description only mentions failed git commits.
-- The `find` at `sandbox-lib.sh:223` walks the whole tree on every launch, with
+  verify; `--ignore-working-copy` may be the workaround). The option
+  description now says so.
+- The `find` at `sandbox-lib.sh:239` walks the whole tree on every launch, with
   no `-xdev` and no depth or exclude limits. That is slow on large trees
   (`node_modules`, `target/`), and it crosses into other mounted filesystems.
-  Add `-xdev`, plus an optional depth limit or exclude list.
-- `vcsMetadataDirs` is a `listOf str`, joined with `:` and passed to
-  `find -name`. An entry containing `:` breaks the splitting, and one
-  containing `/` can never match. Constrain the type
-  (`strMatching "[^/:]+"`), and document that entries are `find -name` globs.
+  Consider `-xdev` and an optional depth limit or exclude list; both trade
+  coverage for speed.
+- A `.git` that is a _symlink_ to a directory inside the project is locked at
+  its target, but the symlink itself can still be replaced.
 
-**Generic directions.** None of these needs per-tool lists, and all leave
-policy to the user.
+**Next steps** (agreed: A, then B). Neither needs per-tool lists, and both
+leave policy to the user.
 
 - **A. Session change report (cheap, works for any VCS).** At launch, create a
   marker file in the host-side runtime directory. After `bwrap` exits, list
@@ -137,6 +108,7 @@ policy to the user.
   - `bwrap` 0.11.0 or later, not installed setuid
     ([NEWS](https://github.com/containers/bubblewrap/blob/main/NEWS.md),
     [`bwrap(1)`](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)).
+    The pinned nixpkgs has 0.12.0.
   - Kernel support for overlayfs in user namespaces (mainline since 5.11,
     [patch](https://lore.kernel.org/all/20201207163255.564116-11-mszeredi@redhat.com/)).
   - Upper and work directories outside the project, because `bwrap` forbids
@@ -148,88 +120,23 @@ policy to the user.
   `filesystem.projectMode = "bind" | "overlay"` plus a
   `--sandbox-review <session>` subcommand.
 
-- **Keep the current lock** as the default in `bind` mode once the bugs are
-  fixed. Document plainly that it only stops existing metadata roots from
-  being modified.
-
-Suggested order: fix the bugs, then A (small), then B.
-
-### [ ] 2. Writable host LLM config directories — **high**
-
-The `claude-code` profile binds `~/.claude` and `~/.claude.json` read-write
-(`profiles/llm/claude-code.nix:40-48`), and `codex` binds `~/.codex`
-read-write (`profiles/llm/codex.nix:33-37`). The host's own CLI runs commands
-from these files:
-
-- Claude Code: hooks in `~/.claude/settings.json` and MCP server commands in
-  `~/.claude.json`
-  ([settings docs](https://code.claude.com/docs/en/settings)).
-- Codex: `notify`, `mcp_servers.<id>.command`, and command hooks in
-  `~/.codex/config.toml`
-  ([config reference](https://learn.chatgpt.com/docs/config-file/config-reference)).
-
-A sandboxed session can add any of these, and they run outside the sandbox the
-next time the user starts the CLI on the host. It is the same class of problem
-as item 1, outside the project directory. The README's security model doesn't
-mention it.
-
-Generic fix: don't share host config with the sandbox. Give each environment
-(or all sandboxes) its own persistent state directory, e.g.
-`$XDG_STATE_HOME/bubbllmwrap/<llm>`. Bind it at the path the CLI expects, or
-point the CLI at it with `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The host CLI then
-never reads config written by the sandbox. The cost is a one-time login inside
-the sandbox. Users who want shared credentials can opt in to binding just the
-credential file. Check first whether the CLI replaces that file with
-`rename(2)`, which fails on a bind-mounted file. This could be an
-`llm.stateDir` option.
-
-### [ ] 3. Terminal input injection (TIOCSTI) — **high, kernel-dependent**
-
-`bwrap` runs without `--new-session` (`sandbox.sh:88-118`), so the sandbox
-shares the host's terminal session. A process inside can push bytes into the
-terminal's input queue with `ioctl(TIOCSTI)`, and whatever is still queued
-when the sandbox exits is read by the host shell (CVE-2017-5226). `bwrap(1)`:
-"if you don't use --new-session, it is recommended to use seccomp to disallow
-the TIOCSTI ioctl"
-([bwrap.xml](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)).
-
-`apply-seccomp` doesn't cover this. srt documents its filter as blocking
-`AF_UNIX` sockets and io_uring, not TIOCSTI, and it only wraps the LLM process
-anyway. Linux 6.2 and later can refuse TIOCSTI to unprivileged processes
-(`dev.tty.legacy_tiocsti=0`), but the upstream default still allows it, and
-distributions differ
-([`CONFIG_LEGACY_TIOCSTI`](https://www.kernelconfig.io/config_legacy_tiocsti)).
-
-Options:
-
-- A small seccomp filter for the whole sandbox, built with libseccomp at Nix
-  build time and passed with `bwrap --add-seccomp-fd`, that returns `EPERM`
-  for `ioctl(TIOCSTI)` (and `TIOCLINUX`, which matters on virtual consoles).
-  This is the smallest change and doesn't affect the TUI.
-- `--new-session` plus a pty relay: the sandbox gets its own pty, and the
-  launcher copies bytes between it and the real terminal. More robust, but more
-  code, and it needs care with Ctrl-C and window-size forwarding.
-  `--new-session` alone stops job-control signals from reaching the TUI.
+- **Keep the current lock** as the default in `bind` mode. Its option
+  description states that it only stops existing metadata roots from being
+  modified.
 
 ### [~] 4. Project directory validation — **medium**
 
-_(Was "symlink validation".)_ `sandbox.sh:36-41` only checks that
-`$project_dir` is a directory.
+Done: the project path is made absolute (relative `--sandbox-project-dir`
+values used to mount the project over the sandbox root), symlinks are resolved
+for the bind source while the mount point keeps the path as given, and a
+missing `--sandbox-project-dir` value gets a clear error
+(`__sandbox_resolve_project_dir` in `sandbox-lib.sh`).
 
-- **Dangerous roots.** Running in `$HOME` or `/` binds the whole tree
-  read-write, including `~/.bashrc`, `~/.ssh`, and every tool config. That is
-  easy to do by accident, because the project defaults to `$PWD`. After
-  resolving symlinks, refuse `/`, `$HOME`, and any ancestor of `$HOME` unless
-  the user passes an explicit override flag. This also covers the old concern
-  about `$project_dir` being a symlink to `/`.
-- **Relative paths don't work.** `--sandbox-project-dir .` becomes
-  `--bind . .`, which mounts the project over the sandbox root, so the launch
-  fails (reproduced: `execvp … No such file or directory`). Convert the path
-  to absolute up front.
-- **Symlinks.** Keep two values: the absolute path as given (used as the
-  in-sandbox mount point and for `--chdir`, so the README's "same path" promise
-  holds), and the resolved path (used as the bind source and as the root of the
-  item 1 scan). This also fixes the path bug in item 1.
+Remaining: **dangerous roots.** Running in `$HOME` or `/` binds the whole tree
+read-write, including `~/.bashrc`, `~/.ssh`, and every tool config. That is
+easy to do by accident, because the project defaults to `$PWD`. After
+resolving symlinks, refuse `/`, `$HOME`, and any ancestor of `$HOME` unless the
+user passes an explicit override flag.
 
 ### [ ] 5. Canned profiles mount publishing credentials — **medium**
 
@@ -244,7 +151,8 @@ The proxy limits where these can be sent. But the obvious way to make these
 profiles useful is to allowlist the registry (`registry.npmjs.org`,
 `upload.pypi.org`, `crates.io`), and at that point an injected agent can
 publish packages as the user. This exposure comes from the project's own
-defaults rather than from anything users configure.
+defaults rather than from anything users configure. The README's security
+model now mentions it.
 
 Make credential binds opt-in, either as a per-profile sub-option or as
 structured binds that are off by default (item 8). Keep caches and non-secret
@@ -260,35 +168,33 @@ which includes `daemon-socket/socket`. A read-only bind doesn't stop
 and fixed-output builds have network access outside the proxy. With seccomp
 on, `socket(AF_UNIX)` is blocked, so `nix` commands that need the daemon
 probably fail. Check what the profile actually supports, and bind only the
-subpaths it needs.
-
-More generally, any socket that a user's bind exposes bypasses the proxy when
-seccomp is off. Say so in the `seccomp.enable` description.
+subpaths it needs. (The `seccomp.enable` description now warns about sockets
+reachable through binds.)
 
 ### [ ] 7. Passing variables through `--clearenv` — **medium**
 
-`sandbox.sh:109` uses `--clearenv`, so `TERM`, `COLORTERM`, `LANG`, `LC_*`,
+`sandbox.sh:128` uses `--clearenv`, so `TERM`, `COLORTERM`, `LANG`, `LC_*`,
 and `TZ` are unset inside the sandbox (reproduced). TUIs will likely degrade,
 and `vim`/`less` will complain. Add an explicit passthrough option, e.g.
 `envPassthrough = ["TERM" "COLORTERM" "LANG" "LC_ALL" "TZ"]`, emitted as
-`--setenv` with the host's values. It is also the right way to pass API keys
-(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Interpolating them in `env` instead
-puts them in `set -x` output (item 14).
+`--setenv` with the host's values. It would also be the cleanest way to pass
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Claude Code's
+`CLAUDE_CODE_OAUTH_TOKEN`
+([env vars](https://code.claude.com/docs/en/env-vars)); for now the README
+shows interpolating them through `env`.
 
-### [ ] 8. `args`/`env` quoting is unsafe by default — **medium**
+### [~] 8. `args`/`env` quoting is unsafe by default — **medium**
 
-Plain-string `args` and `env` values default to `quote = false`, and they are
-spliced unquoted into a bash array literal (`sandbox/default.nix:82-85`). So
-`env.GREETING = "hello world"` becomes two words. `bwrap` takes `world` as the
-program to run and everything after it as that program's arguments. The
-project bind, `--chdir`, and `HOME` silently disappear, and the launch fails.
-
-Similarly, `claude-code.nix:33` shell-escapes `--disallowedTools` with
-`lib.escapeRegex`. That happens to escape `(`, `)`, and `*`, but not spaces, so
-a rule like `Bash(rm -rf:*)` splits into two arguments. Use
+Done: `claude-code.nix` used `lib.escapeRegex` to shell-escape
+`--disallowedTools`, which split rules containing spaces; it now uses
 `lib.escapeShellArg`.
 
-Options:
+Remaining: plain-string `args` and `env` values default to `quote = false`,
+and they are spliced unquoted into a bash array literal
+(`sandbox/default.nix:86`). So `env.GREETING = "hello world"` becomes two
+words. `bwrap` takes `world` as the program to run and everything after it as
+that program's arguments. The project bind, `--chdir`, and `HOME` silently
+disappear, and the launch fails. Options:
 
 - Make `quote = true` the default, so shell interpolation is the opt-in.
 - Add a structured `binds` option: an attrset keyed by path, with entries like
@@ -308,13 +214,13 @@ done.)_
   appended once.
 - `proxy.port` is documented but never read; the in-sandbox ports are fixed at
   3128 and 1028. Remove the option or implement it.
-- Both `GIT_SSH_COMMAND` values (`sandbox/default.nix:146`, `:191`) call `ssh`
-  and `socat`, and neither is on the sandbox `PATH` (`:47`); `socat` exists
+- Both `GIT_SSH_COMMAND` values (`sandbox/default.nix:154`, `:199`) call `ssh`
+  and `socat`, and neither is on the sandbox `PATH` (`:50`); `socat` exists
   only inside the s6 service wrappers. Use store paths, or drop the variable.
-  The `# TODO` at `:188` is stale.
-- Document how the allowlist matches. glider matches a domain and all of its
-  subdomains, ignores the port, and doesn't resolve names that match no rule,
-  so there's no DNS side channel
+  The `# TODO` at `:196` is stale.
+- Document how the allowlist matches in the option description. glider matches
+  a domain and all of its subdomains, ignores the port, and doesn't resolve
+  names that match no rule, so there's no DNS side channel
   ([`rule/proxy.go`](https://github.com/nadoo/glider/blob/main/rule/proxy.go)).
   Also document that filtering at the `CONNECT` level can't see the TLS SNI or
   `Host` header. An allowlisted domain on a shared CDN is only as narrow as
@@ -347,90 +253,58 @@ default for everything else. At the module level:
 
 Keep `forward=direct://` when no parent proxy is set.
 
-### [ ] 11. Test coverage — **medium**
+### [~] 11. Test coverage — **medium**
 
-_(Was "test coverage for the proxy-disabled rcfile path".)_ The VM test
-(`nix/checks/eval-sandbox.nix`) forces `proxy.enable = true`, and only checks
-that each package's `mainProgram` is on `PATH`. Add cases for:
+Done: the VM test (`nix/checks/eval-sandbox.nix`) now also checks that writes
+under `.git/hooks` fail, that each state directory is writable, and that
+`TIOCSTI` is refused (probed under `script`, so the probe has a controlling
+terminal).
+
+Remaining cases:
 
 - `proxy.enable = false` (the rcfile branches that create `down` files) and
   `seccomp.enable = false`. Confirm the nested namespace from `apply-seccomp`
   doesn't interfere with s6 or the socat bridge.
 - Seccomp actually blocking `socket(AF_UNIX)`.
-- The VCS lock: writes under `.git/` fail; a nested repo; a submodule or
-  worktree gitlink; a symlinked project path; a self-referencing gitlink.
+- The VCS lock beyond the basic case: a nested repo; a submodule or worktree
+  gitlink; a symlinked project path; a self-referencing gitlink. (All verified
+  by hand outside a VM; see the commit that fixed them.)
 - A project path containing spaces, a relative `--sandbox-project-dir`, and
-  passing arguments through to the LLM.
+  passing arguments through to the LLM (verified by hand outside a VM).
 - One real toolchain operation per language profile (e.g. `go build`,
   `cargo build --offline`); see item 16.
 
-### [ ] 12. Module interface and public API — **medium** (settle before merge)
+### [~] 12. Module interface and public API — **medium**
 
-- `environments.<name>.enable` is never read:
-  `nix/modules/flake/default.nix:74` exports every environment. Filter on it.
-- `freeformType = types.anything` on environments, `llm`, and `proxy`
-  (`options.nix:122`, `:298`, `:365`) silently accepts typos such as
-  `hook.pre` or `proxy.allowlist`. The only use of a freeform attribute is
-  `llm.disallowedTools`, and the claude-code profile can declare that as a
-  real option, since profiles are modules.
-- `llm.package` defaults to `pkgs.coreutils` (`options.nix:303`), so an
+Done before merge: see [Completed](#completed). Remaining:
+
+- `llm.package` defaults to `pkgs.coreutils` (`options.nix:328`), so an
   environment without an LLM profile builds a script that runs `coreutils`.
   Make the option required, or fall back to an interactive shell.
-- `llm.prompt` is set with `config =` at normal priority (`options.nix:348`),
+- `llm.prompt` is set with `config =` at normal priority (`options.nix:373`),
   so a user's prompt is appended to the default instead of replacing it. If
   that isn't intended, set it with `default` instead.
-- `lib.<system>` is `filterAttrs isFunction legacyPackages` (`flake.nix:125`).
-  That also publishes `callPackage`, `newScope`, `overrideScope`,
-  `makeSandbox*`, and so on. List the intended exports explicitly.
-- `devshellm` (`flake.nix:139`) is a contributor environment, but it is
-  exported as a public package. It references `self'.devShells.default`, which
-  pulls in the `dev` partition's inputs whenever the package is evaluated
-  (e.g. by `nix flake check`). Move it into the `dev` partition.
 - The launcher derivations are built from bubbLLMwrap's own nixpkgs
-  (`self'.legacyPackages`), while profile packages come from the consumer's
+  (`self'.legacyPackages`), while profile packages come from the environment's
   `pkgs`. So consumers' overlays don't reach `bash`, `s6`, `socat`, or
   `apply-seccomp`, and a closure can contain two nixpkgs instances. Consider
   building the launcher from the environment's `pkgs`.
 - `debug = true` (`flake.nix:28`) adds `debug` and `allSystems` outputs for
-  every consumer.
+  every consumer, and makes `nix flake check` warn about an unknown output
+  `allSystems`.
+- `llm` keeps `freeformType = types.anything` (`options.nix:323`) so LLM
+  profiles can stash CLI-specific settings (`disallowedTools`). Typos under
+  `llm.*` are therefore still accepted silently.
 
-### [ ] 13. Documentation accuracy — **medium**
+### [~] 14. Small correctness fixes — **low**
 
-- `README.md:211-213` says only the project directory and `/tmp` are writable.
-  In fact the sandbox root is a writable tmpfs (discarded at exit), and
-  `~/.claude`, `~/.claude.json`, and `~/.codex` are bound read-write
-  (item 2). The security model also doesn't mention the VCS lock or its limits.
-- The README says `evalSandbox` supplies a `pkgs` "with the Claude Code
-  overlay". It doesn't: the top-level `perSystem` never sets
-  `_module.args.pkgs`, so `evalSandbox` gets plain
-  `inputs.nixpkgs.legacyPackages.<system>`. The overlay is applied only in the
-  `dev` partition and in this flake's own `bubbllmwrap` config. Fix either the
-  code or the claim, and mention that unfree packages must be allowed.
-- `canned.nix:63` includes `null`, which produces bare `claude-code` and
-  `codex` environments, but `CLAUDE.md:63` and the README say there are none.
-- `CLAUDE.md:125` calls the docs command `mkdocs`; it is `mkoptdocs`.
-- `docs/HACKING.md:47` has an empty link target for `nix/checks`.
-- The launcher's argument syntax is undocumented. It is
-  `[--sandbox-project-dir DIR] [--] [BWRAP_ARGS…] [-- LLM_ARGS…]`, so passing
-  flags to the LLM takes `-- --` in the launcher's own arguments (three `--`
-  with `nix run`). Tested: `-- --model x` hands `--model x` to `bwrap`.
-  Document this, or simplify it.
-- `nix/lib/modules/sandbox-prompt.txt` tells the model there is "no risk of
-  affecting the host system" and that "all operations are logged". Neither is
-  true, and the CLI runs with `--dangerously-skip-permissions`. The prompt
-  should state the actual boundaries.
-- The `seccomp` option description links srt at `34a39e0`
-  (`options.nix:428`), but `apply-seccomp` builds `7a725a3`.
-- `hooks.post` runs on the host against files the sandbox has modified, so
-  running `git` there is exactly the risk in item 1. Note this in its
-  description.
+Done: `set -x` before `bwrap` printed the full command line, including any
+secret passed through `env`, on every launch. It now runs only when
+`SANDBOX_DEBUG` is set.
 
-### [ ] 14. Small correctness fixes — **low**
+Remaining:
 
-- `set -x` before `bwrap` (`sandbox.sh:87`) prints the full command line on
-  every launch, including any secret passed through `env`. Put it behind a
-  debug variable.
-- `${llmCmd} || exit` (`sandbox/default.nix:201`) skips `hooks.exit` when the
+- `${llmCmd} || exit` (`sandbox/default.nix:209`) skips `hooks.exit` when the
   CLI fails. When the CLI succeeds, the final `exit` returns the hook's status
   instead of the CLI's. Run the exit hook unconditionally, and exit with the
   CLI's status.
@@ -464,9 +338,104 @@ cache. Verify each profile. `--overlay-src DIR --tmp-overlay DIR` (`bwrap`
 0.11.0 or later) gives a writable view whose writes are discarded at exit,
 which suits caches well.
 
+### [ ] 17. Logging in inside the sandbox — **medium, to verify**
+
+Since item 2, the `claude-code` and `codex` profiles keep their config and
+login in a sandbox-owned directory, so each CLI needs one login inside the
+sandbox. Neither login flow has been tested end to end:
+
+- A browser login that redirects to `localhost` can't reach the CLI inside the
+  sandbox's network namespace. Claude Code can fall back to pasting a code;
+  check what Codex offers (device code, API key).
+- The token exchange must reach an allowlisted domain. Token _refresh_ already
+  works inside the sandbox (it did when the host's `~/.claude` was shared), but
+  the initial login may need more domains.
+- Existing users lose their host settings, `CLAUDE.md`, commands, and MCP
+  servers inside the sandbox until they copy what they want into the state
+  directory. The README explains this; consider a one-time, opt-in seeding
+  hook that copies only non-executable files.
+
 ---
 
 ## Completed
+
+### [x] 2. Writable host LLM config directories
+
+The `claude-code` profile used to bind the host's `~/.claude` and
+`~/.claude.json` read-write, and `codex` the host's `~/.codex`. Both CLIs run
+commands from those files (hooks and MCP servers in Claude Code,
+[settings docs](https://code.claude.com/docs/en/settings); `notify`, MCP
+servers, and hooks in Codex,
+[config reference](https://learn.chatgpt.com/docs/config-file/config-reference)),
+so a session could plant commands that the host CLI later ran unsandboxed.
+
+The new, generic `filesystem.stateDirs.<name>.target` option gives an
+environment a persistent directory on the host under
+`${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/<name>` (mode `0700`), bound at
+`target` inside the sandbox. The LLM profiles use it for `~/.claude` (with
+`CLAUDE_CONFIG_DIR`, which also moves `.claude.json` there,
+[claude-directory](https://code.claude.com/docs/en/claude-directory)) and
+`~/.codex` (with `CODEX_HOME`). Follow-up: item 17.
+
+### [x] 3. Terminal input injection (TIOCSTI)
+
+`bwrap` runs without `--new-session`, so the sandbox shares the host's terminal
+session, and `ioctl(TIOCSTI)` could queue keystrokes for the host shell
+(CVE-2017-5226; [`bwrap(1)`](https://github.com/containers/bubblewrap/blob/main/bwrap.xml)
+recommends seccomp for exactly this). Linux 6.2's `dev.tty.legacy_tiocsti`
+sysctl can refuse it, but the upstream default allows it
+([`CONFIG_LEGACY_TIOCSTI`](https://www.kernelconfig.io/config_legacy_tiocsti)).
+
+`nix/pkgs/sandbox-seccomp-filter` now builds a small BPF program with
+libseccomp (native architecture plus its 32-bit compat ABIs) that refuses
+`TIOCSTI` and `TIOCLINUX` with `EPERM`. The launcher passes it to `bwrap` with
+`--add-seccomp-fd`, so it covers the whole sandbox. Controlled by
+`seccomp.denyTerminalInjection` (default on). Verified: without the filter, a
+byte is injected; with it, `EPERM`. `--new-session` plus a pty relay remains an
+option if more terminal hardening is wanted.
+
+### [x] 13. Documentation accuracy
+
+Fixed:
+
+- the README's "writable" claim and security model (tmpfs root, the VCS lock
+  and its limits, state directories, terminal filter, credential binds);
+- the `evalSandbox` overlay claim (now true: the top-level `pkgs` carries the
+  Claude Code overlay);
+- the bare `claude-code`/`codex` environments, which now appear in the README
+  and `CLAUDE.md`;
+- the `mkoptdocs` name;
+- the empty `HACKING.md` link;
+- the undocumented argument syntax, now in the README's "Passing arguments";
+- the system prompt that claimed "no risk" and "all operations are logged";
+- the srt link revision;
+- a warning on `hooks.post`.
+
+### [x] Pre-merge fixes on `claude/nixos-modular-interface-e5YW4`
+
+- `docs/OPTIONS.md` regenerated. CI now also runs on `pull_request` and
+  `workflow_dispatch`.
+- VCS lock:
+  - binds are mapped to the project's mount path, so symlinked project paths
+    are covered;
+  - gitlink files are locked;
+  - gitlinks are followed one level only, which fixes a crash on
+    self-referencing gitlinks;
+  - `vcsMetadataDirs` entries may not contain `/` or `:`.
+- Environments are declared with
+  `submoduleWith { shorthandOnlyDefinesConfig = false; }`. Previously a plain
+  attrset definition such as `environments.foo.imports = [...]` (the form the
+  README used) was taken as config, and the environment-level `freeformType`
+  swallowed `imports` silently, so no profiles were applied.
+- `freeformType` was removed from environments and `proxy`, so typos there are
+  errors now.
+- `environments.<name>.enable` is honored by the flake module.
+- `lib.<system>` exports only `evalSandbox`.
+- `legacyPackages` no longer carries the `makeScope` plumbing. Its `packages`
+  function broke `nix build .#packages.<system>.<name>`.
+- `packages` lists `apply-seccomp` and `docs` explicitly.
+- `devshellm` moved into the `dev` partition and became an app
+  (`nix run .#devshellm`), so consumers never evaluate it.
 
 ### [x] Seccomp BPF filtering for Unix sockets and io_uring
 
@@ -520,14 +489,11 @@ complexity for little benefit.
 
 ## Priority order
 
-1. **The "Before merging" list** (docs, CI trigger, VCS-lock bugs, interface
-   decisions).
-2. **Items 2 and 3** (writable host LLM config; TIOCSTI). Both let code run
-   directly on the host, and both are small changes.
-3. **Item 4** (project directory validation), done together with the item 1
-   bug fixes.
+1. **The "Before merging" list** (first CI run; item 17).
+2. **Item 1A** (session change report).
+3. **Item 4** (refuse `$HOME` and `/` as the project directory).
 4. **Items 5 and 6** (defaults that widen exposure).
 5. **Items 7 and 8** (environment passthrough; quoting and structured binds).
-6. **Item 1A, then 1B** (change report; overlay mode).
+6. **Item 1B** (overlay mode).
 7. **Item 11** (tests), added alongside each of the above.
 8. Everything else.

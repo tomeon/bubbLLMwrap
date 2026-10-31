@@ -57,20 +57,63 @@ $ nix run github:tomeon/bubbLLMwrap#claude-code-go -- --sandbox-project-dir /pat
 Inside the sandbox the project is mounted read-write at the same path as in the
 process that started the sandbox, and the LLM CLI launches automatically.
 
-> There is no default/base environment — pick an `<llm>-<language>` target
-> explicitly.
+> There is no default package; name an environment explicitly.
+
+### Passing arguments
+
+The launcher's arguments are:
+
+```
+[--sandbox-project-dir DIR] [--] [BWRAP_ARGS...] [-- LLM_ARGS...]
+```
+
+Anything after the first `--` (or after `--sandbox-project-dir DIR`) goes to
+`bwrap`, up to the next `--`; what follows that goes to the LLM CLI. So passing
+flags to the LLM takes two `--` in the launcher's own arguments, plus the one
+`nix run` needs:
+
+```shell-session
+$ nix run github:tomeon/bubbLLMwrap#claude-code-go -- -- -- --model opus
+$ nix run github:tomeon/bubbLLMwrap#claude-code-go -- --ro-bind-try ~/notes ~/notes -- --model opus
+```
+
+### First run: logging in
+
+The `claude-code` and `codex` profiles do not share your host's `~/.claude`,
+`~/.claude.json`, or `~/.codex` with the sandbox. Both CLIs run commands named
+in their configuration (hooks, MCP servers, notifiers), so a writable bind of
+the host's config would let a sandboxed session plant commands that your host
+CLI later runs outside the sandbox. Instead, each profile gets its own
+persistent directory on the host, bound at the usual path inside the sandbox:
+
+| Profile       | Host directory                                              | Inside the sandbox                         |
+| ------------- | ----------------------------------------------------------- | ------------------------------------------ |
+| `claude-code` | `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/claude-code` | `~/.claude` (with `CLAUDE_CONFIG_DIR` set) |
+| `codex`       | `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/codex`       | `~/.codex` (with `CODEX_HOME` set)         |
+
+All `claude-code-*` environments share one directory, as do all `codex-*`
+ones, so you log in once per CLI, inside the sandbox. Settings, `CLAUDE.md`,
+commands, and agents you want in the sandbox go in that directory too. See
+[`filesystem.stateDirs`](docs/OPTIONS.md) to add or change these directories.
+
+A browser login that redirects to `localhost` can't reach the CLI inside the
+sandbox; use the CLI's paste-the-code, device-code, or API-key login instead.
+To pass an API key from your host environment, add it to `env`, e.g.
+`env.ANTHROPIC_API_KEY = ''"$ANTHROPIC_API_KEY"'';` (the launcher starts the
+sandbox with an empty environment).
 
 ### Canned environments
 
 Each environment is the cross-product of an LLM profile and a language/tooling
-profile, named `<llm>-<language>`:
+profile, named `<llm>-<language>`. The bare `<llm>` environments have
+`basic-tooling` only:
 
-| LLM           | Languages / tooling                                  |
-| ------------- | ---------------------------------------------------- |
-| `claude-code` | `cpp`, `devops`, `go`, `js`, `nix`, `python`, `rust` |
-| `codex`       | `cpp`, `devops`, `go`, `js`, `nix`, `python`, `rust` |
+| LLM           | Languages / tooling                                          |
+| ------------- | ------------------------------------------------------------ |
+| `claude-code` | (none), `cpp`, `devops`, `go`, `js`, `nix`, `python`, `rust` |
+| `codex`       | (none), `cpp`, `devops`, `go`, `js`, `nix`, `python`, `rust` |
 
-e.g. `claude-code-python`, `codex-rust`. List them with
+e.g. `claude-code`, `claude-code-python`, `codex-rust`. List them with
 `nix flake show github:tomeon/bubbLLMwrap`.
 
 ## Profiles
@@ -80,10 +123,10 @@ Built-ins:
 
 ### LLM profiles
 
-| Profile       | CLI                | Notable defaults                                                                                                                                                           |
-| ------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude-code` | `pkgs.claude-code` | `--dangerously-skip-permissions`, web/`curl`/`wget` tools disabled, telemetry off, binds `~/.claude` & `~/.claude.json`, allows `api.anthropic.com`, `platform.claude.com` |
-| `codex`       | `pkgs.codex`       | `--full-auto`, binds `~/.codex`, allows `api.github.com`, `auth.openai.com`, `chatgpt.com`                                                                                 |
+| Profile       | CLI                | Notable defaults                                                                                                                                                                                               |
+| ------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude-code` | `pkgs.claude-code` | `--dangerously-skip-permissions`, web/`curl`/`wget` tools disabled, telemetry off, [own config directory](#first-run-logging-in), allows `api.anthropic.com`, `mcp-proxy.anthropic.com`, `platform.claude.com` |
+| `codex`       | `pkgs.codex`       | `--full-auto`, [own config directory](#first-run-logging-in), allows `api.github.com`, `auth.openai.com`, `chatgpt.com`                                                                                        |
 
 Both build on `basic-tooling`, which provides: bash, coreutils, curl,
 diffutils, dnsutils, fd, file, findutils, gawk, getent, git, gnugrep, gnused,
@@ -151,8 +194,10 @@ output (toggle with `bubbllmwrap.includePackages = false`).
 
 ### Plain flake (no `flake-parts`)
 
-Use `evalSandbox`; an appropriate `pkgs` (with the Claude Code overlay) is
-supplied for you:
+Use `evalSandbox`; an appropriate `pkgs` (bubbLLMwrap's nixpkgs with the Claude
+Code overlay) is supplied for you. Claude Code is unfree, so allow unfree
+packages as described [above](#requirements), or set `_module.args.pkgs` to
+your own nixpkgs instance:
 
 ```nix
 {
@@ -189,6 +234,9 @@ Environment options (see the [reference](docs/OPTIONS.md)) include:
 - `llm.{package,cmd,args,prompt}` — which CLI to run and how
 - `proxy.{enable,allowList,port,extraConfig,extraRules}` — allowlist HTTP proxy ([glider](https://github.com/nadoo/glider))
 - `seccomp.enable` — system-call filtering via `apply-seccomp` (default on)
+- `seccomp.denyTerminalInjection` — block terminal input injection for the whole sandbox (default on)
+- `filesystem.{denyVcsMetadata,vcsMetadataDirs}` — lock version-control metadata read-only (default on)
+- `filesystem.stateDirs` — persistent directories owned by the sandbox, such as an LLM's config
 
 Extend an existing environment without redefining it via `.extend`:
 
@@ -202,20 +250,41 @@ environments.claude-code-go-extra =
 
 ## Security model
 
+The LLM CLI is treated as untrusted: prompt injection or hostile repository
+content can steer it.
+
 - **Process isolation** — `--unshare-all` and `--die-with-parent`; an isolated
   PID/network/IPC/etc. namespace.
 - **System-call filtering** — the LLM CLI runs under
   [`apply-seccomp`](https://github.com/anthropic-experimental/sandbox-runtime)
-  (blocks `AF_UNIX` socket abuse, `io_uring`, and ptrace of the proxy
-  infrastructure); disable per-environment with `seccomp.enable = false`.
-- **Filesystem** — only the project directory and
-  `/tmp` are writable; `/nix/store`, `/etc/passwd`, `/etc/group`, and the
-  profile cache directories are read-only; nothing else is visible.
+  (blocks `AF_UNIX` socket creation and `io_uring`, and hides the sandbox's
+  own helper processes); disable per-environment with `seccomp.enable = false`.
+  A second filter covers the whole sandbox and refuses the `TIOCSTI` and
+  `TIOCLINUX` ioctls, so nothing inside can push keystrokes into your terminal
+  for the host shell to run after exit (CVE-2017-5226).
+- **Filesystem** — the sandbox root is a fresh tmpfs, writable but discarded on
+  exit. The project directory is mounted read-write. `/nix/store`,
+  `/etc/passwd`, `/etc/group`, and the profiles' config and cache binds are
+  read-only. The LLM's [own config directory](#first-run-logging-in) is
+  read-write. Nothing else from the host is visible.
+- **Version-control metadata** — every `.git` and `.jj` found under the project
+  at launch (including submodule and worktree gitlink files) is mounted
+  read-only, so the CLI can't add hooks or change repository config. This can't
+  stop the CLI from _creating_ a new repository elsewhere in the project, which
+  host-side `git` would then honor (e.g. its `core.fsmonitor`). Review what a
+  session changed before running VCS commands in it on the host.
 - **Network** — all traffic flows through a [glider](https://github.com/nadoo/glider)
-  proxy that allows only the domains in `proxy.allowList`; everything else is
-  rejected.
+  proxy that allows only the domains in `proxy.allowList` (and their
+  subdomains); everything else is rejected. With `proxy.enable = false` the
+  sandbox has no network at all.
 - **Privilege** — runs as the host user with no added capabilities.
 - **Telemetry** — disabled for the bundled CLIs.
+
+Not covered: code you later run yourself (build scripts, tests, `flake.nix`) is
+whatever the LLM wrote. Language profiles also bind some credential files
+read-only (`~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, and `~/.aws` etc.
+in `devops`); if you allowlist the matching registry, the CLI can use them. See
+[`TODO.md`](TODO.md) for planned work.
 
 ## Contributing
 

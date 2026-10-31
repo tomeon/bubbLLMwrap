@@ -16,6 +16,7 @@
       makeSandboxScanDir = scope.callPackage ./pkgs/sandbox-scan-dir {};
 
       sandbox-lib = scope.callPackage ./pkgs/sandbox-lib {};
+      sandbox-seccomp-filter = scope.callPackage ./pkgs/sandbox-seccomp-filter {};
       sandbox-writers = scope.callPackage ({
         lib,
         execline,
@@ -64,7 +65,22 @@
         }).optionsCommonMark) {};
     });
   in {
-    legacyPackages = pkgSet;
-    packages = lib.filterAttrs (lib.const lib.isDerivation) config.legacyPackages;
+    # The scope itself (with `callPackage`, `newScope`, ...) for in-flake use,
+    # e.g. by the checks.
+    _module.args.bubbllmwrapScope = pkgSet;
+
+    # Strip the `makeScope` plumbing from the public output. In particular its
+    # `packages` attribute is a function, which breaks the Nix CLI's lookup of
+    # fully qualified installables such as `.#packages.<system>.<name>`.
+    legacyPackages = builtins.removeAttrs pkgSet [
+      "callPackage"
+      "newScope"
+      "overrideScope"
+      "packages"
+    ];
+
+    packages = {
+      inherit (config.legacyPackages) apply-seccomp docs;
+    };
   };
 }
