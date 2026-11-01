@@ -15,10 +15,13 @@
 #         ];
 #       };
 #
-#       environments.my-env.imports = with config.bubbllmwrap.profiles; [
-#         claude-code
-#         my-tooling
-#       ];
+#       # A function, not a plain attrset, because it uses `imports`.
+#       environments.my-env = _: {
+#         imports = with config.bubbllmwrap.profiles; [
+#           claude-code
+#           my-tooling
+#         ];
+#       };
 #     };
 #   };
 {

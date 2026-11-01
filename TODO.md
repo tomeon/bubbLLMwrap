@@ -422,13 +422,14 @@ Fixed:
   - gitlinks are followed one level only, which fixes a crash on
     self-referencing gitlinks;
   - `vcsMetadataDirs` entries may not contain `/` or `:`.
-- Environments are declared with
-  `submoduleWith { shorthandOnlyDefinesConfig = false; }`. Previously a plain
-  attrset definition such as `environments.foo.imports = [...]` (the form the
-  README used) was taken as config, and the environment-level `freeformType`
-  swallowed `imports` silently, so no profiles were applied.
 - `freeformType` was removed from environments and `proxy`, so typos there are
-  errors now.
+  errors now. This also matters for a plain attrset definition such as
+  `environments.foo.imports = [...]` (the form the README used to show): the
+  `types.submodule` shorthand treats it as config, and the freeform type used
+  to swallow `imports` silently, so no profiles were applied. It is now an
+  evaluation error. Definitions that use `imports` must be functions
+  (`environments.foo = _: { imports = [...]; };`), and the README and
+  flake-module examples now use that form.
 - `environments.<name>.enable` is honored by the flake module.
 - `lib.<system>` exports only `evalSandbox`.
 - `legacyPackages` no longer carries the `makeScope` plumbing. Its `packages`

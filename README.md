@@ -177,12 +177,16 @@ tree, unzip, util-linux, vim, which, yq, zip — and read-only binds for
           profiles.my-tooling.packages = with pkgs; [cowsay fortune];
 
           # ...combined with built-ins into a runnable environment.
-          # Produces a `claude-code-mine` package output.
-          environments.claude-code-mine.imports = with config.profiles; [
-            claude-code
-            go
-            my-tooling
-          ];
+          # Produces a `claude-code-mine` package output. Environment
+          # definitions that use `imports` must be functions; a plain attrset
+          # only sets options.
+          environments.claude-code-mine = _: {
+            imports = with config.profiles; [
+              claude-code
+              go
+              my-tooling
+            ];
+          };
         };
       };
     };

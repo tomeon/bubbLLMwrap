@@ -98,8 +98,9 @@ from an existing one without redefining it.
   directory (on the host under `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap`).
   The LLM profiles use it for their config instead of binding the host's
   `~/.claude`/`~/.codex`, which the host CLI would execute commands from.
-- Environments are `submoduleWith { shorthandOnlyDefinesConfig = false; }`,
-  so a plain attrset definition may use `imports`.
+- Environments are a plain `types.submodule`: an attrset definition only sets
+  options, so a definition that uses `imports` (or declares options) must be a
+  function, e.g. `environments.foo = _: { imports = [ … ]; };`.
 
 ## Commands
 
