@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   flake-check:
     name: Flake check (${{ matrix.arch }})
@@ -27,9 +30,20 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
+      # The NixOS VM test (eval-sandbox) needs KVM, which not every hosted
+      # runner provides (arm64 runners may not). Without it, still evaluate
+      # every check and build the ones that don't need a VM.
       - name: Check flake
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+          ARCH: ${{ matrix.arch }}
         run: |
-          NIXPKGS_ALLOW_UNFREE=1 nix flake check \
-            --impure \
-            --print-build-logs \
-            --show-trace
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            nix flake check --impure --print-build-logs --show-trace
+          else
+            echo "::warning::/dev/kvm is not available on this runner; skipping the NixOS VM test"
+            nix flake check --impure --no-build --show-trace
+            nix build --impure --print-build-logs --show-trace \
+              ".#checks.${ARCH}.options-docs" \
+              ".#checks.${ARCH}.treefmt"
+          fi

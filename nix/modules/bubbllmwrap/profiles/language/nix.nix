@@ -3,11 +3,12 @@
 
   profiles = {
     nix = {
+      # `/nix/var/nix` is deliberately not bound: it holds the Nix daemon's
+      # socket, and a read-only bind doesn't stop `connect(2)`. With seccomp
+      # disabled the CLI could then have the daemon build or substitute, with
+      # network access outside the proxy. (With seccomp enabled, `AF_UNIX`
+      # sockets are blocked anyway.) Bind it yourself if you accept that.
       args = [
-        "--ro-bind-try"
-        "/nix/var/nix"
-        "/nix/var/nix"
-
         "--ro-bind-try"
         "/etc/nix"
         "/etc/nix"

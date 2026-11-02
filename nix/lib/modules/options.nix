@@ -140,6 +140,11 @@ moduleWithSystem ({self', ...} @ perSystem: {
             extendModules,
             ...
           } @ environment: {
+            # Environment modules (and profiles, which are imported into them)
+            # get the same `pkgs` as the enclosing configuration, so they can
+            # be written as `{pkgs, ...}: { ... }`.
+            config._module.args.pkgs = lib.mkDefault pkgs;
+
             options = {
               name = mkOption {
                 type = types.str;
@@ -168,20 +173,22 @@ moduleWithSystem ({self', ...} @ perSystem: {
                     modules = lib.toList modules;
                   }).config;
                 example = lib.literalExpression ''
-                  {
-                    my-extended-environment = environments.my-environment.extend [
-                      ({pkgs, ...}: {
-                        packages = with pkgs; [
-                          hello
-                          worldofgoo
-                        ];
-                      })
-                    ];
-                  }
+                  (config.environments.my-environment.extend [
+                    ({pkgs, ...}: {
+                      packages = with pkgs; [hello];
+                    })
+                  ]).script
                 '';
                 description = ''
-                  Function that permits extending this environment by applying
-                  additional modules.
+                  Function that applies additional modules to this environment
+                  and returns the resulting configuration (with its own
+                  `script`, and its own `extend`). The original environment is
+                  unchanged.
+
+                  The result is an evaluated configuration, not a module, so it
+                  cannot be used as the definition of another entry in
+                  {option}`environments`. To define a new named environment,
+                  import the same profiles instead.
                 '';
               };
 
@@ -486,6 +493,7 @@ moduleWithSystem ({self', ...} @ perSystem: {
                   See [the "Unix Socket Restrictions (Linux)" section](https://github.com/anthropic-experimental/sandbox-runtime#unix-socket-restrictions-linux)
                   from that project's documentation for details on the goals of
                   this program and how it achieves them.
+                  :::
                 '';
                 default = {};
                 type = types.submodule {

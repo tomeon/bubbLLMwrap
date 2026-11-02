@@ -23,12 +23,20 @@ that this project would have to keep up to date.
 
 ## Before merging to `main`
 
-- [ ] **Watch the first CI run on this branch.** The VM test needs KVM. Confirm
-      the `ubuntu-24.04-arm` runner provides it. The VM test's new assertions (VCS
-      lock, state directories, `TIOCSTI`) were validated by running the same
-      environments outside a VM, not inside one.
+- [ ] **Get CI running.** No Flake Check run exists for this PR, and GitHub
+      lists no such workflow for the repository even though `main` has
+      `.github/workflows/flake-check.yml`. That usually means Actions are
+      disabled for the repository (the default for forks). Once enabled, watch
+      the first run: the VM test's assertions so far were validated by running
+      the same environments outside a VM, not inside one. Without `/dev/kvm`
+      (possibly the `ubuntu-24.04-arm` runner), the workflow evaluates every
+      check, builds the non-VM ones, and skips the VM test with a warning.
 - [ ] **Decide on item 17** (logging in inside the sandbox), since the
       `claude-code` and `codex` profiles no longer share the host's login.
+- [ ] **Decide on item 5** (credential binds), which GitHub Advanced Security
+      also flagged on the PR, and whether this flake's own `pkgs` should allow
+      the unfree `claude-code` package (CodeRabbit's suggestion; today users
+      set `NIXPKGS_ALLOW_UNFREE=1` and pass `--impure`, as the README says).
 
 Everything else that was listed here is done; see [Completed](#completed).
 
@@ -147,6 +155,10 @@ user passes an explicit override flag.
 
 ### [ ] 5. Canned profiles mount publishing credentials — **medium**
 
+_(GitHub Advanced Security flagged the same binds on the PR, also noting
+`~/.yarnrc`, `~/.yarnrc.yml`, and `~/.config/containers`, and that anything the
+CLI reads ends up with the model provider.)_
+
 Several profiles bind credential files read-only by default:
 
 - `~/.cargo/credentials` (`profiles/language/rust.nix:23-25`)
@@ -165,18 +177,6 @@ Make credential binds opt-in, either as a per-profile sub-option or as
 structured binds that are off by default (item 8). Keep caches and non-secret
 config on by default. Two details: `~/.npmrc` holds both registry config and
 tokens, and current cargo uses `credentials.toml`.
-
-### [ ] 6. The `nix` profile exposes the Nix daemon socket — **medium**
-
-The `nix` profile binds `/nix/var/nix` (`profiles/language/nix.nix:7-9`),
-which includes `daemon-socket/socket`. A read-only bind doesn't stop
-`connect(2)` to a Unix socket; reproduced with `bwrap --unshare-all`. With
-`seccomp.enable = false`, the CLI can talk to the daemon, whose substitutions
-and fixed-output builds have network access outside the proxy. With seccomp
-on, `socket(AF_UNIX)` is blocked, so `nix` commands that need the daemon
-probably fail. Check what the profile actually supports, and bind only the
-subpaths it needs. (The `seccomp.enable` description now warns about sockets
-reachable through binds.)
 
 ### [~] 8. `args` quoting is unsafe by default — **medium**
 
@@ -390,6 +390,34 @@ Fixed:
 - the srt link revision;
 - a warning on `hooks.post`.
 
+### [x] Fixes from the CodeRabbit review of `70e3e18`
+
+- 6\. The `nix` profile bound `/nix/var/nix`, which holds the Nix daemon
+  socket; a read-only bind doesn't stop `connect(2)` (reproduced), so with
+  `seccomp.enable = false` the CLI could have the daemon build or substitute
+  outside the proxy. The bind is gone (with seccomp on, the daemon was
+  unreachable anyway), and the README's network bullet now explains Unix
+  sockets as a channel the proxy doesn't see.
+- Environment modules didn't receive `pkgs`, so `environments.foo =
+{pkgs, ...}: ...`, `.extend ({pkgs, ...}: ...)`, and profiles written that
+  way failed with "called without required argument 'pkgs'". The environment
+  submodule now passes the enclosing `pkgs` through.
+- The documented `environments.new = config.environments.old.extend ...`
+  pattern recursed infinitely (it predates this branch): `.extend` returns an
+  evaluated configuration, which can't be another entry's definition. The
+  README, `CLAUDE.md`, and the option's own example now show `.extend` for
+  standalone use (e.g. its `.script`) and profile imports for new named
+  environments. `CLAUDE.md`'s example also read `profiles` from the
+  environment's own `config`.
+- `dev/flake.nix` declared its own `claude-code-nix`, which replaced the root
+  input inside the `dev` partition (with a separately locked nixpkgs). Removed,
+  along with its lock nodes.
+- The `seccomp` option's `:::{.note}` was never closed.
+- `makeSandboxScanDir`'s `passthru.install` interpolated `finalAttrs` (not a
+  derivation) instead of `finalAttrs.finalPackage`.
+- CI: skip only the VM test when `/dev/kvm` is missing, and declare
+  `permissions: contents: read`.
+
 ### [x] Fixes from the Codex review of `c29405b`
 
 - A `.git` symlink inside the project (or a gitlink whose path runs through
@@ -501,7 +529,7 @@ complexity for little benefit.
 1. **The "Before merging" list** (first CI run; item 17).
 2. **Item 1A** (session change report).
 3. **Item 4** (refuse `$HOME` and `/` as the project directory).
-4. **Items 5 and 6** (defaults that widen exposure).
+4. **Item 5** (credential binds, a default that widens exposure).
 5. **Item 8** (structured binds, which also fixes `args` quoting).
 6. **Item 1B** (overlay mode).
 7. **Item 11** (tests), added alongside each of the above.

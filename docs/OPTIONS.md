@@ -315,8 +315,15 @@ list of string matching the pattern ^\[a-zA-Z_]\[0-9a-zA-Z_]\*$
 
 
 
-Function that permits extending this environment by applying
-additional modules\.
+Function that applies additional modules to this environment
+and returns the resulting configuration (with its own
+` script `, and its own ` extend `)\. The original environment is
+unchanged\.
+
+The result is an evaluated configuration, not a module, so it
+cannot be used as the definition of another entry in
+` environments `\. To define a new named environment,
+import the same profiles instead\.
 
 
 
@@ -336,16 +343,11 @@ raw value *(read only)*
 *Example:*
 
 ```nix
-{
-  my-extended-environment = environments.my-environment.extend [
-    ({pkgs, ...}: {
-      packages = with pkgs; [
-        hello
-        worldofgoo
-      ];
-    })
-  ];
-}
+(config.environments.my-environment.extend [
+  ({pkgs, ...}: {
+    packages = with pkgs; [hello];
+  })
+]).script
 
 ```
 

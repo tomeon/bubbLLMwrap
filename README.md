@@ -138,7 +138,7 @@ tree, unzip, util-linux, vim, which, yq, zip — and read-only binds for
 
 | Profile  | Tools                                                                             | Cache binds (read-only)                                                                               |
 | -------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `nix`    | nix, alejandra                                                                    | `/nix/var/nix`, `/etc/nix`, `~/.config/nix`                                                           |
+| `nix`    | nix, alejandra                                                                    | `/etc/nix`, `~/.config/nix` (not `/nix/var/nix`, which holds the daemon socket)                       |
 | `go`     | go, gopls, delve, golangci-lint, gotools, gofumpt                                 | `~/go/pkg/mod`, `~/.cache/go-build`, `~/.config/go`                                                   |
 | `python` | python3, pip, virtualenv, poetry, ruff, pyright, uv                               | `~/.cache/{pip,pypoetry,uv}`, `~/.config/{pypoetry,uv}`, `~/.pip`, `~/.pypirc`                        |
 | `rust`   | rustc, cargo, rustfmt, clippy, rust-analyzer                                      | `~/.cargo/{registry,git,config,config.toml,credentials}`                                              |
@@ -243,14 +243,27 @@ Environment options (see the [reference](docs/OPTIONS.md)) include:
 - `filesystem.{denyVcsMetadata,vcsMetadataDirs}` — lock version-control metadata read-only (default on)
 - `filesystem.stateDirs` — persistent directories owned by the sandbox, such as an LLM's config
 
-Extend an existing environment without redefining it via `.extend`:
+`.extend` applies extra modules to an existing environment and returns the
+result, e.g. to build a variant's script without defining a new environment:
 
 ```nix
-environments.claude-code-go-extra =
-  config.environments.claude-code-go.extend ({pkgs, ...}: {
+packages.claude-code-go-extra =
+  (config.environments.claude-code-go.extend ({pkgs, ...}: {
     packages = with pkgs; [air];
     proxy.allowList = ["proxy.golang.org"];
-  });
+  })).script;
+```
+
+The result is an evaluated configuration, not a module, so it can't be the
+definition of another entry in `environments`. For a new named environment,
+import the same profiles:
+
+```nix
+environments.claude-code-go-extra = {pkgs, ...}: {
+  imports = with config.profiles; [claude-code go];
+  packages = with pkgs; [air];
+  proxy.allowList = ["proxy.golang.org"];
+};
 ```
 
 ## Security model
@@ -282,10 +295,15 @@ content can steer it.
   working tree (`core.hooksPath = .husky`, symlinked hooks, `pre-commit`
   configs). Review what a session changed before running VCS commands in it on
   the host.
-- **Network** — all traffic flows through a [glider](https://github.com/nadoo/glider)
-  proxy that allows only the domains in `proxy.allowList` (and their
-  subdomains); everything else is rejected. With `proxy.enable = false` the
-  sandbox has no network at all.
+- **Network** — the sandbox has its own network namespace, so all IP traffic
+  flows through a [glider](https://github.com/nadoo/glider) proxy that allows
+  only the domains in `proxy.allowList` (and their subdomains); everything else
+  is rejected. With `proxy.enable = false` there is no IP network at all.
+  Unix sockets are a separate channel: a read-only bind doesn't stop
+  `connect(2)`, so a host socket reachable through a bind (for example the Nix
+  daemon's, under `/nix/var/nix`) is a way out that the proxy doesn't see. The
+  `apply-seccomp` filter blocks creating Unix sockets, so this only applies
+  with `seccomp.enable = false`. No built-in profile binds such a socket.
 - **Privilege** — runs as the host user with no added capabilities.
 - **Telemetry** — disabled for the bundled CLIs.
 

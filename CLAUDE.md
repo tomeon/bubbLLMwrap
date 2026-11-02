@@ -67,18 +67,24 @@ Built-in profiles:
 `claude-code-go`, `codex-python`, plus bare `claude-code` and `codex`
 environments with `basic-tooling` only. There is **no** default package.
 
-An environment is defined by importing profiles and overriding options:
+An environment is defined by importing profiles and overriding options.
+Profiles live in the enclosing configuration's `config`; inside an environment
+module, `config` is the environment's own, while `pkgs` is passed through:
 
 ```nix
-environments.my-env = {config, pkgs, ...}: {
-  imports = with config.profiles; [claude-code go];
-  packages = with pkgs; [air];
-  proxy.allowList = ["proxy.golang.org"];
-};
+{config, ...}: {
+  environments.my-env = {pkgs, ...}: {
+    imports = with config.profiles; [claude-code go];
+    packages = with pkgs; [air];
+    proxy.allowList = ["proxy.golang.org"];
+  };
+}
 ```
 
-Use `config.environments.<name>.extend [ module… ]` to derive a new environment
-from an existing one without redefining it.
+`config.environments.<name>.extend [ module… ]` applies extra modules and
+returns the resulting configuration (e.g. to take its `.script`). It is not a
+module, so it can't define another `environments` entry; for a new named
+environment, import the same profiles.
 
 ### Option conventions
 

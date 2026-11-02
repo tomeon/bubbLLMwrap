@@ -56,7 +56,7 @@ in
     '';
     passthru = {
       install = mkHookScript "install" ''
-        cp --dereference --preserve=all --recursive --no-target-directory ${finalAttrs} "''${1?}"
+        cp --dereference --preserve=all --recursive --no-target-directory ${finalAttrs.finalPackage} "''${1?}"
       '';
 
       start = mkHookScript "start" ''
