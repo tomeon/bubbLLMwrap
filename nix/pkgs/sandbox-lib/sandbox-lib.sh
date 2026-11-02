@@ -12,20 +12,24 @@ fi
 
 declare -fr __sandbox_mkfifo
 
+# Runs from an EXIT trap, so it must never fail: under `set -e` a failing trap
+# replaces the script's exit status. It is a subshell, so `set +e` stays local.
 # shellcheck disable=SC2329
 __sandbox_cleanup() (
+  set +e
+
   if [[ -n ${__sandbox_s6_scan_dir:-} ]]; then
     # `svscanctl -q` is liable to lose logs, but we're about to delete all logs
     # anyway.
     s6-svscanctl -q "$__sandbox_s6_scan_dir"
   fi
 
-  if [[ -n ${SANDBOX_S6_SVSCAN[1]} ]]; then
+  if [[ -n ${SANDBOX_S6_SVSCAN[1]:-} ]]; then
     local __sandbox_s6_svscan_stdin="${SANDBOX_S6_SVSCAN[1]}"
     exec {__sandbox_s6_svscan_stdin}<&- || :
   fi
 
-  if [[ -n ${SANDBOX_S6_SVSCAN[0]} ]]; then
+  if [[ -n ${SANDBOX_S6_SVSCAN[0]:-} ]]; then
     local __sandbox_s6_svscan_stdout="${SANDBOX_S6_SVSCAN[0]}"
     exec {__sandbox_s6_svscan_stdout}>&- || :
   fi
@@ -35,8 +39,19 @@ __sandbox_cleanup() (
   fi
 
   if [[ -n ${__sandbox_runtime_dir:-} ]]; then
-    rm -f -r --one-file-system --preserve-root "$__sandbox_runtime_dir"
+    # `svscanctl -q` doesn't wait for the s6-supervise processes, which may
+    # still be writing under the runtime directory; retry briefly.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      rm -f -r --one-file-system --preserve-root "$__sandbox_runtime_dir" 2>/dev/null && break
+      sleep 0.1
+    done
+
+    if [[ -e $__sandbox_runtime_dir ]]; then
+      printf 1>&2 -- 'warning: could not remove %q\n' "$__sandbox_runtime_dir"
+    fi
   fi
+
+  :
 )
 
 declare -fr __sandbox_cleanup
@@ -80,17 +95,17 @@ declare -fr __sandbox_infer_uid
 __sandbox_init_runtime_dir() {
   __sandbox_infer_uid || return
 
-  declare -g __sandbox_runtime_dir_parent
-
-  __sandbox_runtime_dir_parent="${XDG_RUNTIME_DIR:-"/run/user/${__sandbox_uid}"}"
-  if ! mkdir -p "$__sandbox_runtime_dir_parent" &>/dev/null || ! [[ -d $__sandbox_runtime_dir_parent ]]; then
-    __sandbox_runtime_dir_parent="${TMPDIR:-/tmp}/user/${__sandbox_uid}"
+  # Use the per-user runtime directory only if it already exists and belongs
+  # to us; the login manager creates it, we don't. Otherwise use TMPDIR. Either
+  # way `mktemp -d` atomically creates a fresh mode-0700 directory, so a shared
+  # parent such as /tmp is safe.
+  local parent="${XDG_RUNTIME_DIR:-"/run/user/${__sandbox_uid}"}"
+  if ! [[ -d $parent && -O $parent && ! -L $parent ]]; then
+    parent="${TMPDIR:-/tmp}"
   fi
 
-  readonly __sandbox_runtime_dir_parent
-
   declare -g __sandbox_runtime_dir
-  __sandbox_runtime_dir="$(mktemp -d "${__sandbox_runtime_dir_parent}/bubbllmwrap-sandbox.$$.XXXXXXXXXX")"
+  __sandbox_runtime_dir="$(mktemp -d "${parent}/bubbllmwrap-sandbox.$$.XXXXXXXXXX")" || return
   readonly __sandbox_runtime_dir
 }
 
@@ -108,7 +123,7 @@ declare -fr __sandbox_init_s6_scan_dir
 
 __sandbox_setup() {
   trap __sandbox_cleanup INT TERM QUIT EXIT
-  __sandbox_init_s6_scan_dir
+  __sandbox_init_s6_scan_dir || return
 }
 
 declare -fr __sandbox_setup
@@ -201,10 +216,16 @@ declare -fr __sandbox_resolve_project_dir
 # The recognized names arrive from the module via SANDBOX_VCS_METADATA_DIRS
 # (colon-separated, e.g. ".git:.jj"; empty disables the feature).
 #
+# A metadata path reached through a symlink that lives inside the project is
+# refused outright: the sandbox could replace the symlink (bind mounts cannot
+# cover a symlink itself) and so redirect host-side VCS commands to a
+# repository it controls.
+#
 # Arguments: the resolved project directory (scan root and bind-source prefix)
 # and the project's mount point inside the sandbox (bind-destination prefix).
 #
 # Populates the global `__sandbox_deny_args` array with `--ro-bind` arguments.
+# Returns non-zero, after printing why, if the sandbox must not start.
 __sandbox_add_vcs_deny_args() {
   local real_project_dir="${1?}" project_mount="${2?}"
 
@@ -235,7 +256,7 @@ __sandbox_add_vcs_deny_args() {
   # can sit anywhere — at the cost of walking the whole tree on every launch.
   local found
   while IFS= read -r -d '' found; do
-    __sandbox_lock_vcs_path "$real_project_dir" "$project_mount" "$found" 1
+    __sandbox_lock_vcs_path "$real_project_dir" "$project_mount" "$found" 1 || return
   done < <(find "$real_project_dir" \( "${find_expr[@]}" \) -prune -print0 2>/dev/null)
 
   unset __sandbox_vcs_seen
@@ -252,6 +273,14 @@ declare -fr __sandbox_add_vcs_deny_args
 # also stops self-referencing or cyclic gitlinks.
 __sandbox_lock_vcs_path() {
   local real_project_dir="${1?}" project_mount="${2?}" path="${3?}" follow="${4?}"
+
+  local link
+  if link="$(__sandbox_project_symlink_in_path "$real_project_dir" "$path")"; then
+    printf 1>&2 -- 'Error: VCS metadata %q is reached through the symlink %q inside the project.\n' "$path" "$link"
+    printf 1>&2 -- 'The sandbox could replace that symlink and redirect host-side VCS commands, so refusing to start.\n'
+    printf 1>&2 -- 'Replace the symlink with what it points to, or disable filesystem.denyVcsMetadata.\n'
+    return 1
+  fi
 
   local real
   real="$(realpath -e -- "$path" 2>/dev/null)" || return 0
@@ -282,11 +311,60 @@ __sandbox_lock_vcs_path() {
     done <"$real"
     [[ -n $gitdir ]] || return 0
     [[ $gitdir == /* ]] || gitdir="$(dirname -- "$real")/$gitdir"
-    __sandbox_lock_vcs_path "$real_project_dir" "$project_mount" "$gitdir" 0
+    __sandbox_lock_vcs_path "$real_project_dir" "$project_mount" "$gitdir" 0 || return
   fi
 }
 
 declare -fr __sandbox_lock_vcs_path
+
+# Resolve an absolute path one component at a time, following symlinks the way
+# the kernel does, and print the first symlink found that lives inside the
+# resolved project directory (the sandbox can replace such a symlink). Returns
+# 1 if there is none. Symlinks outside the project, which the sandbox cannot
+# modify, are followed.
+__sandbox_project_symlink_in_path() {
+  local real_project_dir="${1?}" path="${2?}"
+
+  local cur=/ comp next target links=0
+  local -a todo=() more=()
+  IFS=/ read -r -a todo <<<"$path"
+
+  while ((${#todo[@]})); do
+    comp="${todo[0]}"
+    todo=("${todo[@]:1}")
+
+    case "$comp" in
+    '' | .) continue ;;
+    ..)
+      cur="${cur%/*}"
+      cur="${cur:-/}"
+      continue
+      ;;
+    esac
+
+    next="${cur%/}/${comp}"
+    if [[ -L $next ]]; then
+      if [[ $cur == "$real_project_dir" || $cur == "$real_project_dir"/* ]]; then
+        printf '%s\n' "$next"
+        return 0
+      fi
+
+      # Same limit as the kernel's MAXSYMLINKS; also stops loops.
+      ((++links <= 40)) || return 1
+      target="$(readlink -- "$next")" || return 1
+      [[ $target != /* ]] || cur=/
+      IFS=/ read -r -a more <<<"$target"
+      todo=("${more[@]}" "${todo[@]}")
+      continue
+    fi
+
+    cur="$next"
+  done
+
+  return 1
+}
+
+declare -fr __sandbox_project_symlink_in_path
 
 # Bind sandbox-owned persistent directories (an LLM CLI's config and login
 # state, say) from the host into the sandbox, instead of sharing the host's own

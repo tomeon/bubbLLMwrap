@@ -24,6 +24,7 @@
   llmArgs,
   vcsMetadataDirs ? [],
   stateDirs ? [],
+  envPassthrough ? [],
   applySeccomp ? true,
   denyTerminalInjection ? true,
   preHook ? "",
@@ -48,6 +49,8 @@
   allArgs = args ++ envArgs;
 
   path = lib.makeBinPath (packages ++ [s6 coreutils llmPackage]);
+
+  socatExe = lib.getExe' socat "socat";
 
   sandboxName = "${name}-sandbox";
 
@@ -83,7 +86,18 @@
   };
 
   vars = writers.writeBash "${sandboxName}-vars" {} ''
-    declare -a __sandbox_bwrap_args=(
+    declare -a __sandbox_bwrap_args=()
+
+    # Host environment variables to keep across `--clearenv`, if set. These
+    # come first so that `env` can override them.
+    for __sandbox_var in ${lib.escapeShellArgs envPassthrough}; do
+      if [[ "$(declare -p "$__sandbox_var" 2>/dev/null)" =~ ^declare\ -[a-zA-Z]*x ]]; then
+        __sandbox_bwrap_args+=(--setenv "$__sandbox_var" "''${!__sandbox_var}")
+      fi
+    done
+    unset __sandbox_var
+
+    __sandbox_bwrap_args+=(
       ${lib.concatStringsSep "\n" allArgs}
     )
 
@@ -126,7 +140,7 @@
 
     source ${sandbox-lib}
 
-    __sandbox_setup
+    __sandbox_setup || exit
 
     unset all_proxy ALL_PROXY \
       no_proxy NO_PROXY \
@@ -151,7 +165,7 @@
       declare -rx https_proxy="$http_proxy"
       declare -rx HTTPS_PROXY="$https_proxy"
 
-      declare -rx GIT_SSH_COMMAND="ssh -o ProxyCommand='socat - PROXY:localhost:%h:%p,proxyport=3128'"
+      declare -rx GIT_SSH_COMMAND="ssh -o ProxyCommand='${socatExe} - PROXY:localhost:%h:%p,proxyport=3128'"
 
       declare -rx DOCKER_HTTP_PROXY="$http_proxy"
       declare -rx DOCKER_HTTPS_PROXY="$https_proxy"
@@ -193,10 +207,9 @@
         declare -rx DOCKER_HTTPS_PROXY="$DOCKER_HTTP_PROXY"
       fi
 
-      # TODO make `GIT_SSH_COMMAND` use the socks5 proxy in case the HTTP proxy
-      # is disabled.
+      # Fallback for when the HTTP proxy is disabled.
       if [[ -z "''${GIT_SSH_COMMAND:-}" ]]; then
-        declare -rx GIT_SSH_COMMAND="ssh -o ProxyCommand='socat - SOCKS5-CONNECT:localhost:1028:%h:%p'"
+        declare -rx GIT_SSH_COMMAND="ssh -o ProxyCommand='${socatExe} - SOCKS5-CONNECT:localhost:1028:%h:%p'"
       fi
     else
       touch "''${__sandbox_s6_scan_dir?}/socat-socks5/down"
@@ -205,10 +218,16 @@
     __sandbox_s6_svscan -C 2
 
     ${enterHook}
-    alias ${llmCmd}=${lib.escapeShellArg (lib.concatStringsSep " " ((map lib.escapeShellArg llmMaybeWrapped) ++ llmArgs))}" "''${__sandbox_llm_cmd_args_runtime:-}
-    ${llmCmd} || exit
+    # One word: the runtime arguments are already shell-quoted (`''${*@Q}` in
+    # the entrypoint) and must not be word-split when the alias is defined.
+    alias ${llmCmd}=${lib.escapeShellArg (lib.concatStringsSep " " ((map lib.escapeShellArg llmMaybeWrapped) ++ llmArgs))}" ''${__sandbox_llm_cmd_args_runtime:-}"
+    ${llmCmd}
+    __sandbox_llm_rc="$?"
+
+    # The exit hook runs whatever the CLI's status; the sandbox exits with the
+    # CLI's status, not the hook's.
     ${exitHook}
-    exit
+    exit "$__sandbox_llm_rc"
   '';
 
   entrypoint = writers.writeBash "${sandboxName}-entrypoint" {} ''

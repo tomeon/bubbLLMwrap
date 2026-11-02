@@ -83,8 +83,13 @@ from an existing one without redefining it.
 ### Option conventions
 
 - `args` and `env` values accept either a plain string or a
-  `{ value; quote; }` submodule. `quote = true` shell-quotes the value; leave it
-  `false` (the default) when you want shell interpolation (e.g. `~` or `$VAR`).
+  `{ value; quote; }` submodule. `quote = true` passes the value literally;
+  `quote = false` inserts it into the launcher as shell syntax (e.g. `~` or
+  `$VAR`, expanded on the host). The defaults differ: `env` values are literal
+  (`quote = true`), while `args` are shell syntax (`quote = false`) because
+  profiles rely on `~` expansion in bind paths.
+- `envPassthrough` names host variables kept across `--clearenv`;
+  `basic-tooling` passes `TERM`/`COLORTERM` and sets `LANG=C.UTF-8`.
 - `hooks.{pre,post}` run on the host before/after `bwrap`; `hooks.{enter,exit}`
   run inside the sandbox.
 - `proxy.allowList` is the set of domains reachable from inside the sandbox;
@@ -93,7 +98,8 @@ from an existing one without redefining it.
   `seccomp.denyTerminalInjection` (default `true`) applies a separate filter
   to the whole sandbox that blocks `TIOCSTI`/`TIOCLINUX`.
 - `filesystem.denyVcsMetadata` (default `true`) mounts every `.git`/`.jj`
-  found under the project read-only, including gitlink files.
+  found under the project read-only, including gitlink files, and refuses to
+  start if one is reached through a symlink inside the project.
 - `filesystem.stateDirs.<name>.target` gives the sandbox its own persistent
   directory (on the host under `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap`).
   The LLM profiles use it for their config instead of binding the host's

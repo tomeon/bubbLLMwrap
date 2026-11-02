@@ -118,9 +118,10 @@ list of ((submodule) or string convertible to it)
 
 
 
-Whether to shell quote the value of this argument \.  Set this to
-false if you want to do things like interpolate environment
-variables’ values in this value\.
+Whether to shell-quote the value\. When ` false ` (the default for
+` args `), the value is inserted into the launcher script as shell
+syntax: ` ~ ` and ` $VAR ` expand on the host when the sandbox starts,
+and unquoted spaces split it into several arguments\.
 
 
 
@@ -184,7 +185,10 @@ pkgs.bubblewrap
 
 
 
-Environment variables to set inside the sandbox\.
+Environment variables to set inside the sandbox\. Plain
+strings are passed literally\. For shell syntax such as ` ~ ` or
+` $VAR `, expanded on the host when the sandbox starts, use
+` { value = ...; quote = false; } `\.
 
 
 
@@ -205,12 +209,13 @@ attribute set of ((submodule) or string convertible to it)
 
 ```nix
 {
-  BAZ = {
-    quote = true;
-    value = "wear sunscreen";
+  GREETING = "wear sunscreen";
+  PROJECT_CACHE = {
+    value = "\"$HOME/.cache/project\"";
+    quote = false;
   };
-  FOO = "\"$BAR\"";
 }
+
 ```
 
 *Declared by:*
@@ -222,9 +227,11 @@ attribute set of ((submodule) or string convertible to it)
 
 
 
-Whether to shell quote the value of this argument \.  Set this to
-false if you want to do things like interpolate environment
-variables’ values in this value\.
+Whether to shell-quote the value\. When ` true ` (the default for
+` env `), the value is passed literally\. Set it to ` false ` to insert
+the value as shell syntax instead, e\.g\. to expand ` ~ ` or ` $VAR ` on
+the host when the sandbox starts; then quote any expansion that may
+contain spaces\.
 
 
 
@@ -236,7 +243,7 @@ boolean
 *Default:*
 
 ```nix
-false
+true
 ```
 
 *Declared by:*
@@ -254,6 +261,50 @@ The value of the argument\.
 
 *Type:*
 string
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.envPassthrough
+
+
+
+Names of host environment variables to pass into the sandbox
+unchanged, if they are set\. The sandbox otherwise starts with
+an empty environment\. Values in
+` environments.<name>.env ` take precedence\.
+
+The ` basic-tooling ` profile passes ` TERM ` and ` COLORTERM `
+and sets ` LANG=C.UTF-8 `, a locale that needs no locale data\.
+Passing other locales (` LANG `, ` LC_* `) only helps if the
+sandbox can find their data, e\.g\. via ` LOCALE_ARCHIVE `\.
+
+
+
+*Type:*
+list of string matching the pattern ^\[a-zA-Z_]\[0-9a-zA-Z_]\*$
+
+
+
+*Default:*
+
+```nix
+[ ]
+```
+
+
+
+*Example:*
+
+```nix
+[
+  "TERM"
+  "COLORTERM"
+  "TZ"
+]
+```
 
 *Declared by:*
  - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
@@ -346,11 +397,20 @@ repositories to plant code that runs on the host
 ` .git/hooks/* `, or ` core.fsmonitor `, ` core.hooksPath `,
 or aliases in ` .git/config `, or the ` .jj ` equivalents\.
 
+If a metadata root, or the path a gitlink points to,
+is reached through a symlink inside the project, the
+sandbox refuses to start: the CLI could replace that
+symlink, which a bind mount cannot cover\.
+
 **Warning:** Only metadata roots that exist at launch are protected\.
 Read-only binds cannot stop the CLI from creating a new
 repository (say, ` some/dir/.git `) elsewhere in the
 project, and host-side tools such as
 ` git status ` will honor its configuration\.
+Hooks that live in the working tree (e\.g\.
+` core.hooksPath = .husky `, hooks symlinked to tracked
+files, or ` pre-commit ` configuration) are not
+protected either\.
 
 **Note:** Locking is whole-root: with this enabled the CLI cannot
 write to ` .git `/` .jj ` at all, so committing from inside
@@ -747,9 +807,10 @@ list of ((submodule) or string convertible to it)
 
 
 
-Whether to shell quote the value of this argument \.  Set this to
-false if you want to do things like interpolate environment
-variables’ values in this value\.
+Whether to shell-quote the value\. When ` false ` (the default for
+` args `), the value is inserted into the launcher script as shell
+syntax: ` ~ ` and ` $VAR ` expand on the host when the sandbox starts,
+and unquoted spaces split it into several arguments\.
 
 
 
@@ -955,8 +1016,10 @@ pkgs.glider
 
 
 
-List of domain names allowed through the proxy\.  All other
-domains are blocked with a ` 403 Unauthorized ` response\.
+Domain names allowed through the proxy\. Each entry also
+allows its subdomains, on any port\. Requests for other
+destinations, including IP addresses, are rejected
+without being resolved\.
 
 
 
@@ -1017,31 +1080,6 @@ strings concatenated with “\\n”
 
 ```nix
 ""
-```
-
-*Declared by:*
- - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
-
-
-
-## environments\.\<name>\.proxy\.port
-
-
-
-Port for the proxy to listen on\. ` 0 ` means a random high
-port will be selected at runtime\.
-
-
-
-*Type:*
-16 bit unsigned integer; between 0 and 65535 (both inclusive)
-
-
-
-*Default:*
-
-```nix
-0
 ```
 
 *Declared by:*

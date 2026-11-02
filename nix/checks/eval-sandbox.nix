@@ -55,11 +55,15 @@
 
       env = {
         TEST_VAR_SIMPLE = "simple-value";
-        TEST_VAR_WITH_SPACE = {
-          value = "value with spaces";
-          quote = true;
-        };
+        TEST_VAR_WITH_SPACE = "value with spaces";
         TEST_VAR_NUMERIC = "42";
+        # Plain strings are literal: none of this may be expanded.
+        TEST_VAR_LITERAL = ''$HOME ~ * "quoted" $(false)'';
+        # Opt-in shell syntax, expanded on the host.
+        TEST_VAR_EXPANDED = {
+          value = ''"$HOME/expanded"'';
+          quote = false;
+        };
       };
 
       llm = {
@@ -74,6 +78,16 @@
               ];
             } ''
               set -euo pipefail
+
+              # Lets the test check exit-status propagation without running
+              # the assertions below. Runtime arguments follow the profile's
+              # `llm.args`, so search all of them.
+              for ((i = 1; i < $#; i++)); do
+                if [[ "''${!i}" == --exit-with ]]; then
+                  j=$((i + 1))
+                  exit "''${!j}"
+                fi
+              done
 
               script="''${BASH_SOURCE[0]}"
               script_name="''${script##*/}"
@@ -102,6 +116,16 @@
                   fi
                 '')
               env.config.packages}
+
+              if [[ "''${TEST_VAR_EXPANDED-}" != "$HOME/expanded" ]]; then
+                err "TEST_VAR_EXPANDED was not expanded: ''${TEST_VAR_EXPANDED-<unset>}"
+              fi
+
+              ${lib.optionalString (lib.elem "TERM" env.config.envPassthrough) ''
+                if [[ "''${TERM-}" != bubbllmwrap-test ]]; then
+                  err "TERM was not passed through: ''${TERM-<unset>}"
+                fi
+              ''}
 
               if (cd /nope) &>/dev/null; then
                 err "changing directory to forbidden path /nope is possible but should not be"
@@ -177,6 +201,8 @@
         allowList = lib.mkForce [allowedHost];
       };
     }));
+
+  firstScript = lib.getExe (lib.head (builtins.attrValues envs)).script;
 in
   testers.nixosTest {
     name = "sandbox";
@@ -198,6 +224,10 @@ in
           127.0.0.1 ${allowedHost} ${blockedHost}
         '';
 
+        # An unprivileged user, to exercise rootless bubblewrap and the
+        # runtime-directory fallback (no /run/user/<uid> without a login).
+        users.users.alice.isNormalUser = true;
+
         virtualisation.memorySize = 2048;
       };
     };
@@ -217,7 +247,25 @@ in
 
       # Test 1: Sandbox runs successfully
       ${lib.concatMapStringsSep "\n" (env: ''
-        machine.succeed("cd /tmp/test-project && ${lib.getExe env.script}")
+        machine.succeed("cd /tmp/test-project && TERM=bubbllmwrap-test ${lib.getExe env.script}")
       '') (builtins.attrValues envs)}
+
+      # Test 2: As an unprivileged user without a login session
+      machine.succeed("runuser -u alice -- mkdir -p /home/alice/test-project/.git/hooks")
+      machine.succeed("runuser -u alice -- sh -c 'echo test content > /home/alice/test-project/test.txt'")
+      machine.succeed("runuser -u alice -- env -C /home/alice/test-project TERM=bubbllmwrap-test ${firstScript}")
+
+      # Test 3: The CLI's exit status survives the exit hook, which still runs
+      machine.succeed(
+        "cd /tmp/test-project; ${firstScript} -- -- --exit-with 3 2>/tmp/exit.log; rc=$?; "
+        "test $rc -eq 3 && grep -q 'PHASE: exit' /tmp/exit.log"
+      )
+
+      # Test 4: A symlinked .git inside the project is refused
+      machine.succeed("mkdir -p /tmp/symlink-project/realgit/hooks && ln -s realgit /tmp/symlink-project/.git")
+      machine.succeed(
+        "cd /tmp/symlink-project; ! ${firstScript} 2>/tmp/symlink.log; "
+        "grep -q 'refusing to start' /tmp/symlink.log"
+      )
     '';
   }

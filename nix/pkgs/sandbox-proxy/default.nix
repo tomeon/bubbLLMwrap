@@ -17,14 +17,12 @@
   extraConfig,
   extraRules,
 }: let
+  # Allowlisted domains go direct; `extraRules` is appended once, after them.
   gliderRulefile = writeText "glider.rule" (''
       forward=direct://
     ''
-    + (lib.concatMapStringsSep "\n" (domain: ''
-        domain=${domain}
-        ${extraRules}
-      '')
-      allowList));
+    + lib.concatMapStrings (domain: "domain=${domain}\n") allowList
+    + extraRules);
 
   gliderConfig = writeText "glider.conf" ''
     verbose=True

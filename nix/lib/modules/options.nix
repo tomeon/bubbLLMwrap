@@ -8,7 +8,12 @@ moduleWithSystem ({self', ...} @ perSystem: {
     inherit (lib) mkOption types;
 
     extraTypes = lib.fix (final: let
+      # `quote` defaults differ: `args` are shell words by default (profiles
+      # rely on `~` expansion), while `env` values are literal by default.
       argModule = {
+        quoteByDefault,
+        quoteDescription,
+      }: {
         options = {
           value = mkOption {
             type = types.str;
@@ -19,12 +24,8 @@ moduleWithSystem ({self', ...} @ perSystem: {
 
           quote = mkOption {
             type = types.bool;
-            default = false;
-            description = ''
-              Whether to shell quote the value of this argument .  Set this to
-              false if you want to do things like interpolate environment
-              variables' values in this value.
-            '';
+            default = quoteByDefault;
+            description = quoteDescription;
           };
 
           __toString = mkOption {
@@ -41,14 +42,31 @@ moduleWithSystem ({self', ...} @ perSystem: {
 
       coerceToArg = types.coercedTo types.str (value: {inherit value;});
 
-      arg = coerceToArg (types.submodule argModule);
+      arg = coerceToArg (types.submodule (argModule {
+        quoteByDefault = false;
+        quoteDescription = ''
+          Whether to shell-quote the value. When `false` (the default for
+          `args`), the value is inserted into the launcher script as shell
+          syntax: `~` and `$VAR` expand on the host when the sandbox starts,
+          and unquoted spaces split it into several arguments.
+        '';
+      }));
 
       var = coerceToArg (types.submodule [
-        argModule
+        (argModule {
+          quoteByDefault = true;
+          quoteDescription = ''
+            Whether to shell-quote the value. When `true` (the default for
+            `env`), the value is passed literally. Set it to `false` to insert
+            the value as shell syntax instead, e.g. to expand `~` or `$VAR` on
+            the host when the sandbox starts; then quote any expansion that may
+            contain spaces.
+          '';
+        })
         ({name, ...}: {
           options = {
             name = mkOption {
-              type = types.strMatching "^[a-zA-Z_][0-9a-zA-Z_]+$";
+              type = types.strMatching "^[a-zA-Z_][0-9a-zA-Z_]*$";
               default = name;
               readOnly = true;
               internal = true;
@@ -180,15 +198,37 @@ moduleWithSystem ({self', ...} @ perSystem: {
               env = mkOption {
                 type = extraTypes.env;
                 default = {};
-                example = {
-                  BAZ = {
-                    quote = true;
-                    value = "wear sunscreen";
-                  };
-                  FOO = ''"$BAR"'';
-                };
+                example = lib.literalExpression ''
+                  {
+                    GREETING = "wear sunscreen";
+                    PROJECT_CACHE = {
+                      value = "\"$HOME/.cache/project\"";
+                      quote = false;
+                    };
+                  }
+                '';
                 description = ''
-                  Environment variables to set inside the sandbox.
+                  Environment variables to set inside the sandbox. Plain
+                  strings are passed literally. For shell syntax such as `~` or
+                  `$VAR`, expanded on the host when the sandbox starts, use
+                  `{ value = ...; quote = false; }`.
+                '';
+              };
+
+              envPassthrough = mkOption {
+                type = types.listOf (types.strMatching "^[a-zA-Z_][0-9a-zA-Z_]*$");
+                default = [];
+                example = ["TERM" "COLORTERM" "TZ"];
+                description = ''
+                  Names of host environment variables to pass into the sandbox
+                  unchanged, if they are set. The sandbox otherwise starts with
+                  an empty environment. Values in
+                  {option}`environments.<name>.env` take precedence.
+
+                  The `basic-tooling` profile passes `TERM` and `COLORTERM`
+                  and sets `LANG=C.UTF-8`, a locale that needs no locale data.
+                  Passing other locales (`LANG`, `LC_*`) only helps if the
+                  sandbox can find their data, e.g. via `LOCALE_ARCHIVE`.
                 '';
               };
 
@@ -266,7 +306,7 @@ moduleWithSystem ({self', ...} @ perSystem: {
                     self'.legacyPackages.makeSandbox.override {
                       inherit (config) bubblewrap;
                     } {
-                      inherit (config) name args env packages;
+                      inherit (config) name args env envPassthrough packages;
 
                       applySeccomp = config.seccomp.enable;
                       inherit (config.seccomp) denyTerminalInjection;
@@ -390,21 +430,14 @@ moduleWithSystem ({self', ...} @ perSystem: {
 
                     package = lib.mkPackageOption pkgs "glider" {};
 
-                    port = mkOption {
-                      type = types.port;
-                      default = 0;
-                      description = ''
-                        Port for the proxy to listen on. `0` means a random high
-                        port will be selected at runtime.
-                      '';
-                    };
-
                     allowList = mkOption {
                       type = types.listOf types.str;
                       default = [];
                       description = ''
-                        List of domain names allowed through the proxy.  All other
-                        domains are blocked with a `403 Unauthorized` response.
+                        Domain names allowed through the proxy. Each entry also
+                        allows its subdomains, on any port. Requests for other
+                        destinations, including IP addresses, are rejected
+                        without being resolved.
                       '';
                     };
 
@@ -525,12 +558,21 @@ moduleWithSystem ({self', ...} @ perSystem: {
                         `.git/hooks/*`, or `core.fsmonitor`, `core.hooksPath`,
                         or aliases in `.git/config`, or the `.jj` equivalents.
 
+                        If a metadata root, or the path a gitlink points to,
+                        is reached through a symlink inside the project, the
+                        sandbox refuses to start: the CLI could replace that
+                        symlink, which a bind mount cannot cover.
+
                         :::{.warning}
                         Only metadata roots that exist at launch are protected.
                         Read-only binds cannot stop the CLI from creating a new
                         repository (say, `some/dir/.git`) elsewhere in the
                         project, and host-side tools such as
                         {command}`git status` will honor its configuration.
+                        Hooks that live in the working tree (e.g.
+                        `core.hooksPath = .husky`, hooks symlinked to tracked
+                        files, or `pre-commit` configuration) are not
+                        protected either.
                         :::
 
                         :::{.note}

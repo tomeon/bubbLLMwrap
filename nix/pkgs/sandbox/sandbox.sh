@@ -69,12 +69,12 @@ if ! [[ -v __sandbox_bwrap_args ]]; then
 fi
 
 # Sandbox-owned persistent directories (e.g. LLM config and login state).
-__sandbox_add_state_dir_args "$home"
+__sandbox_add_state_dir_args "$home" || exit
 
 # Read-only binds that lock version-control metadata roots under the project.
 # These must land *after* the writable project bind below so bwrap's
 # last-writer-wins ordering makes them stick.
-__sandbox_add_vcs_deny_args "$__sandbox_project_dir_real" "$__sandbox_project_dir"
+__sandbox_add_vcs_deny_args "$__sandbox_project_dir_real" "$__sandbox_project_dir" || exit
 
 # Seccomp filter for the whole sandbox; blocks terminal input injection
 # (TIOCSTI/TIOCLINUX). bwrap reads the compiled BPF program from this fd.

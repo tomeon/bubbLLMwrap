@@ -89,7 +89,7 @@ persistent directory on the host, bound at the usual path inside the sandbox:
 | Profile       | Host directory                                              | Inside the sandbox                         |
 | ------------- | ----------------------------------------------------------- | ------------------------------------------ |
 | `claude-code` | `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/claude-code` | `~/.claude` (with `CLAUDE_CONFIG_DIR` set) |
-| `codex`       | `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/codex`       | `~/.codex` (with `CODEX_HOME` set)         |
+| `codex`       | `${XDG_STATE_HOME:-~/.local/state}/bubbllmwrap/codex`       | `~/.codex`                                 |
 
 All `claude-code-*` environments share one directory, as do all `codex-*`
 ones, so you log in once per CLI, inside the sandbox. Settings, `CLAUDE.md`,
@@ -98,9 +98,9 @@ commands, and agents you want in the sandbox go in that directory too. See
 
 A browser login that redirects to `localhost` can't reach the CLI inside the
 sandbox; use the CLI's paste-the-code, device-code, or API-key login instead.
-To pass an API key from your host environment, add it to `env`, e.g.
-`env.ANTHROPIC_API_KEY = ''"$ANTHROPIC_API_KEY"'';` (the launcher starts the
-sandbox with an empty environment).
+The sandbox starts with an empty environment. To pass an API key from your
+host environment, name it in `envPassthrough`, e.g.
+`envPassthrough = ["ANTHROPIC_API_KEY"];`.
 
 ### Canned environments
 
@@ -232,11 +232,12 @@ your own nixpkgs instance:
 Environment options (see the [reference](docs/OPTIONS.md)) include:
 
 - `packages` — extra packages on `PATH`
-- `env` — environment variables (a string, or `{ value; quote; }` to control shell quoting)
+- `env` — environment variables; plain strings are literal, `{ value; quote = false; }` is shell syntax (e.g. `~`, `$VAR`)
+- `envPassthrough` — host environment variables to keep (the sandbox otherwise starts with an empty environment)
 - `args` — extra `bwrap` arguments (e.g. `--ro-bind-try` mounts)
 - `hooks.{pre,enter,exit,post}` — shell run before / inside / after the sandbox
 - `llm.{package,cmd,args,prompt}` — which CLI to run and how
-- `proxy.{enable,allowList,port,extraConfig,extraRules}` — allowlist HTTP proxy ([glider](https://github.com/nadoo/glider))
+- `proxy.{enable,allowList,extraConfig,extraRules}` — allowlist HTTP proxy ([glider](https://github.com/nadoo/glider))
 - `seccomp.enable` — system-call filtering via `apply-seccomp` (default on)
 - `seccomp.denyTerminalInjection` — block terminal input injection for the whole sandbox (default on)
 - `filesystem.{denyVcsMetadata,vcsMetadataDirs}` — lock version-control metadata read-only (default on)
@@ -273,10 +274,14 @@ content can steer it.
   read-write. Nothing else from the host is visible.
 - **Version-control metadata** — every `.git` and `.jj` found under the project
   at launch (including submodule and worktree gitlink files) is mounted
-  read-only, so the CLI can't add hooks or change repository config. This can't
-  stop the CLI from _creating_ a new repository elsewhere in the project, which
-  host-side `git` would then honor (e.g. its `core.fsmonitor`). Review what a
-  session changed before running VCS commands in it on the host.
+  read-only, so the CLI can't add hooks or change repository config. If one is
+  reached through a symlink inside the project, which the CLI could replace,
+  the sandbox refuses to start. This can't stop the CLI from _creating_ a new
+  repository elsewhere in the project, which host-side `git` would then honor
+  (e.g. its `core.fsmonitor`), and it doesn't protect hooks that live in the
+  working tree (`core.hooksPath = .husky`, symlinked hooks, `pre-commit`
+  configs). Review what a session changed before running VCS commands in it on
+  the host.
 - **Network** — all traffic flows through a [glider](https://github.com/nadoo/glider)
   proxy that allows only the domains in `proxy.allowList` (and their
   subdomains); everything else is rejected. With `proxy.enable = false` the

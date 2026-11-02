@@ -35,8 +35,6 @@
       # so a writable bind would let the sandbox plant commands that run
       # unsandboxed later.
       filesystem.stateDirs.codex.target = "~/.codex";
-
-      env.CODEX_HOME = "~/.codex";
     };
   };
 }

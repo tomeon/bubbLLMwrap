@@ -45,7 +45,10 @@
       filesystem.stateDirs.claude-code.target = "~/.claude";
 
       env = {
-        CLAUDE_CONFIG_DIR = "~/.claude";
+        CLAUDE_CONFIG_DIR = {
+          value = "~/.claude";
+          quote = false;
+        };
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
         DISABLE_AUTOUPDATER = "1";
         DISABLE_ERROR_REPORTING = "1";

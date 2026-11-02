@@ -56,9 +56,14 @@
           zip
         ];
 
+      # The sandbox starts with an empty environment; keep terminal detection.
+      envPassthrough = ["TERM" "COLORTERM"];
+
       env = {
         TMPDIR = "/tmp";
         SHELL = "${pkgs.bash}/bin/bash";
+        # UTF-8 without locale data (built into glibc).
+        LANG = "C.UTF-8";
       };
     };
   };

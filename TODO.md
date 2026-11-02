@@ -42,7 +42,10 @@ project at launch and `--ro-bind`s it over the writable project bind
 (`nix/pkgs/sandbox-lib/sandbox-lib.sh`, `__sandbox_add_vcs_deny_args`). Gitlink
 files (submodules, linked worktrees) are locked along with the directory they
 point to. Binds are mapped from the resolved host path to the path the project
-is mounted at, so symlinked project paths are covered. Finding metadata roots by
+is mounted at, so symlinked project paths are covered. Metadata reached through
+a symlink inside the project (a symlinked `.git`, or a gitlink whose path runs
+through one) makes the launcher refuse to start: a bind mount can't cover the
+symlink itself, so the CLI could replace it. Finding metadata roots by
 name, instead of keeping a per-file deny list, covers hooks, `core.fsmonitor`,
 aliases, and anything else inside a root without listing them, and supporting a
 new VCS takes one list entry.
@@ -77,13 +80,17 @@ subdirectory".
   with `.jj` locked most `jj` commands probably fail inside the sandbox (to
   verify; `--ignore-working-copy` may be the workaround). The option
   description now says so.
-- The `find` at `sandbox-lib.sh:239` walks the whole tree on every launch, with
+- The `find` at `sandbox-lib.sh:245` walks the whole tree on every launch, with
   no `-xdev` and no depth or exclude limits. That is slow on large trees
   (`node_modules`, `target/`), and it crosses into other mounted filesystems.
   Consider `-xdev` and an optional depth limit or exclude list; both trade
   coverage for speed.
-- A `.git` that is a _symlink_ to a directory inside the project is locked at
-  its target, but the symlink itself can still be replaced.
+- Hooks that live in the working tree aren't protected: `core.hooksPath`
+  pointing into the project (husky's `.husky`), hooks in `.git/hooks` that
+  are symlinks to tracked files, and hook runners such as `pre-commit` that
+  read tracked config. Running `git commit` on the host then runs whatever the
+  CLI left there. This is close to "code the user knowingly runs", but it's
+  easy to miss; the change report (A) is the generic mitigation.
 
 **Next steps** (agreed: A, then B). Neither needs per-tool lists, and both
 leave policy to the user.
@@ -171,32 +178,22 @@ probably fail. Check what the profile actually supports, and bind only the
 subpaths it needs. (The `seccomp.enable` description now warns about sockets
 reachable through binds.)
 
-### [ ] 7. Passing variables through `--clearenv` — **medium**
+### [~] 8. `args` quoting is unsafe by default — **medium**
 
-`sandbox.sh:128` uses `--clearenv`, so `TERM`, `COLORTERM`, `LANG`, `LC_*`,
-and `TZ` are unset inside the sandbox (reproduced). TUIs will likely degrade,
-and `vim`/`less` will complain. Add an explicit passthrough option, e.g.
-`envPassthrough = ["TERM" "COLORTERM" "LANG" "LC_ALL" "TZ"]`, emitted as
-`--setenv` with the host's values. It would also be the cleanest way to pass
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or Claude Code's
-`CLAUDE_CODE_OAUTH_TOKEN`
-([env vars](https://code.claude.com/docs/en/env-vars)); for now the README
-shows interpolating them through `env`.
+Done:
 
-### [~] 8. `args`/`env` quoting is unsafe by default — **medium**
+- `env` values are now literal by default (`quote = true`); shell syntax is
+  the opt-in (`{ value; quote = false; }`).
+- `claude-code.nix` used `lib.escapeRegex` to shell-escape
+  `--disallowedTools`, which split rules containing spaces; it now uses
+  `lib.escapeShellArg`.
 
-Done: `claude-code.nix` used `lib.escapeRegex` to shell-escape
-`--disallowedTools`, which split rules containing spaces; it now uses
-`lib.escapeShellArg`.
+Remaining: plain-string `args` still default to `quote = false` and are
+spliced unquoted into a bash array literal (`sandbox/default.nix:100`), so an
+argument containing a space becomes two arguments. They were left alone because
+the profiles rely on `~` expansion in bind paths, and flipping the default
+would silently turn every `--ro-bind-try ~/...` into a no-op. The better fix:
 
-Remaining: plain-string `args` and `env` values default to `quote = false`,
-and they are spliced unquoted into a bash array literal
-(`sandbox/default.nix:86`). So `env.GREETING = "hello world"` becomes two
-words. `bwrap` takes `world` as the program to run and everything after it as
-that program's arguments. The project bind, `--chdir`, and `HOME` silently
-disappear, and the launch fails. Options:
-
-- Make `quote = true` the default, so shell interpolation is the opt-in.
 - Add a structured `binds` option: an attrset keyed by path, with entries like
   `{ source; mode = "ro" | "rw"; optional = true; enable = true; }`. The
   generator emits correctly quoted arguments and does the `$HOME` expansion
@@ -206,23 +203,18 @@ disappear, and the launch fails. Options:
 
 ### [~] 9. Proxy: remaining issues — **low**
 
-_(Was "proxy environment variable improvements"; the variables themselves are
-done.)_
+Done: `extraRules` is appended once (it used to repeat per domain and vanish
+with an empty allowlist); `proxy.port`, which did nothing, is removed;
+`GIT_SSH_COMMAND` calls `socat` by store path; the `allowList` description
+says it covers subdomains and any port (glider matches by domain suffix and
+doesn't resolve names that match no rule,
+[`rule/proxy.go`](https://github.com/nadoo/glider/blob/main/rule/proxy.go)).
 
-- `extraRules` is appended once per allowlisted domain, and dropped entirely
-  when the allowlist is empty (`sandbox-proxy/default.nix:20-27`). It should be
-  appended once.
-- `proxy.port` is documented but never read; the in-sandbox ports are fixed at
-  3128 and 1028. Remove the option or implement it.
-- Both `GIT_SSH_COMMAND` values (`sandbox/default.nix:154`, `:199`) call `ssh`
-  and `socat`, and neither is on the sandbox `PATH` (`:50`); `socat` exists
-  only inside the s6 service wrappers. Use store paths, or drop the variable.
-  The `# TODO` at `:196` is stale.
-- Document how the allowlist matches in the option description. glider matches
-  a domain and all of its subdomains, ignores the port, and doesn't resolve
-  names that match no rule, so there's no DNS side channel
-  ([`rule/proxy.go`](https://github.com/nadoo/glider/blob/main/rule/proxy.go)).
-  Also document that filtering at the `CONNECT` level can't see the TLS SNI or
+Remaining:
+
+- `GIT_SSH_COMMAND` still runs `ssh` from `PATH`, and no profile installs
+  `openssh`, so SSH needs `packages = [pkgs.openssh]` (and keys).
+- Document that filtering at the `CONNECT` level can't see the TLS SNI or
   `Host` header. An allowlisted domain on a shared CDN is only as narrow as
   that CDN's protection against domain fronting.
 
@@ -255,10 +247,18 @@ Keep `forward=direct://` when no parent proxy is set.
 
 ### [~] 11. Test coverage — **medium**
 
-Done: the VM test (`nix/checks/eval-sandbox.nix`) now also checks that writes
-under `.git/hooks` fail, that each state directory is writable, and that
-`TIOCSTI` is refused (probed under `script`, so the probe has a controlling
-terminal).
+Done: the VM test (`nix/checks/eval-sandbox.nix`) now also checks that
+
+- writes under `.git/hooks` fail;
+- each state directory is writable;
+- `TIOCSTI` is refused (probed under `script`, so the probe has a controlling
+  terminal);
+- plain `env` strings arrive literally and `quote = false` ones are expanded;
+- `TERM` is passed through;
+- the CLI's exit status survives the exit hook, which still runs;
+- a symlinked `.git` is refused;
+- an unprivileged user without a login session (so no `/run/user/<uid>`) can
+  start a sandbox.
 
 Remaining cases:
 
@@ -267,10 +267,10 @@ Remaining cases:
   doesn't interfere with s6 or the socat bridge.
 - Seccomp actually blocking `socket(AF_UNIX)`.
 - The VCS lock beyond the basic case: a nested repo; a submodule or worktree
-  gitlink; a symlinked project path; a self-referencing gitlink. (All verified
-  by hand outside a VM; see the commit that fixed them.)
-- A project path containing spaces, a relative `--sandbox-project-dir`, and
-  passing arguments through to the LLM (verified by hand outside a VM).
+  gitlink; a gitlink reached through a symlink; a symlinked project path; a
+  self-referencing gitlink. (All verified by hand outside a VM.)
+- A project path containing spaces and a relative `--sandbox-project-dir`
+  (verified by hand outside a VM).
 - One real toolchain operation per language profile (e.g. `go build`,
   `cargo build --offline`); see item 16.
 
@@ -278,10 +278,10 @@ Remaining cases:
 
 Done before merge: see [Completed](#completed). Remaining:
 
-- `llm.package` defaults to `pkgs.coreutils` (`options.nix:328`), so an
+- `llm.package` defaults to `pkgs.coreutils` (`options.nix:366`), so an
   environment without an LLM profile builds a script that runs `coreutils`.
   Make the option required, or fall back to an interactive shell.
-- `llm.prompt` is set with `config =` at normal priority (`options.nix:373`),
+- `llm.prompt` is set with `config =` at normal priority (`options.nix:411`),
   so a user's prompt is appended to the default instead of replacing it. If
   that isn't intended, set it with `default` instead.
 - The launcher derivations are built from bubbLLMwrap's own nixpkgs
@@ -292,30 +292,9 @@ Done before merge: see [Completed](#completed). Remaining:
 - `debug = true` (`flake.nix:28`) adds `debug` and `allSystems` outputs for
   every consumer, and makes `nix flake check` warn about an unknown output
   `allSystems`.
-- `llm` keeps `freeformType = types.anything` (`options.nix:323`) so LLM
+- `llm` keeps `freeformType = types.anything` (`options.nix:361`) so LLM
   profiles can stash CLI-specific settings (`disallowedTools`). Typos under
   `llm.*` are therefore still accepted silently.
-
-### [~] 14. Small correctness fixes — **low**
-
-Done: `set -x` before `bwrap` printed the full command line, including any
-secret passed through `env`, on every launch. It now runs only when
-`SANDBOX_DEBUG` is set.
-
-Remaining:
-
-- `${llmCmd} || exit` (`sandbox/default.nix:209`) skips `hooks.exit` when the
-  CLI fails. When the CLI succeeds, the final `exit` returns the hook's status
-  instead of the CLI's. Run the exit hook unconditionally, and exit with the
-  CLI's status.
-- `__sandbox_cleanup` reads `${SANDBOX_S6_SVSCAN[1]}` without a default
-  (`sandbox-lib.sh:23`). Under `set -u` (as in `sandbox-proxy.sh`), an early
-  failure aborts the cleanup before its `rm -rf`, which leaks the runtime
-  directory.
-- When `XDG_RUNTIME_DIR` is unusable, the runtime directory falls back to
-  `${TMPDIR:-/tmp}/user/$uid` (`sandbox-lib.sh:87`), created with `mkdir -p`
-  and never checked. On such hosts another local user can create it first.
-  Check that it is owned by the user and has mode `0700`.
 
 ### [ ] 15. Dependency updates — **low**
 
@@ -411,6 +390,34 @@ Fixed:
 - the srt link revision;
 - a warning on `hooks.post`.
 
+### [x] Fixes from the Codex review of `c29405b`
+
+- A `.git` symlink inside the project (or a gitlink whose path runs through
+  one) could be replaced from inside the sandbox, bypassing the VCS lock; the
+  launcher now refuses to start (item 1).
+- With no usable `XDG_RUNTIME_DIR`, the runtime directory fell back to
+  `${TMPDIR:-/tmp}/user/$uid` without creating it, so non-root launches
+  failed, and the failure wasn't propagated. It now uses `mktemp -d` directly
+  in `TMPDIR` (private and atomic), and errors propagate. This also removes
+  the old concern about another user pre-creating that directory.
+- `env` values are literal by default (item 8).
+- `envPassthrough` keeps named host variables across `--clearenv`;
+  `basic-tooling` passes `TERM` and `COLORTERM` and sets `LANG=C.UTF-8`
+  (glibc's built-in UTF-8 locale, so no locale data is needed). This was
+  item 7.
+- The exit hook runs even when the CLI fails, and the sandbox exits with the
+  CLI's status, not the hook's.
+- `__sandbox_cleanup` runs from an `EXIT` trap, and under `set -e` (the proxy
+  wrapper) a failure there replaced the sandbox's exit status with 1. It failed
+  intermittently: `s6-svscanctl -q` doesn't wait for the s6-supervise
+  processes, which race the `rm -rf` of the runtime directory, and an unset
+  `SANDBOX_S6_SVSCAN` tripped `set -u`. Cleanup now runs with `set +e`, retries
+  the removal briefly, warns if it still fails, and always succeeds.
+- `extraRules`, `proxy.port`, and `GIT_SSH_COMMAND`'s `socat` path (item 9).
+- Found while testing: runtime arguments for the LLM were expanded unquoted
+  when the rcfile defined its alias, so only the first one reached the CLI
+  (`-- -- --model opus` lost `opus`). They are now passed intact.
+
 ### [x] Pre-merge fixes on `claude/nixos-modular-interface-e5YW4`
 
 - `docs/OPTIONS.md` regenerated. CI now also runs on `pull_request` and
@@ -453,7 +460,8 @@ Leftovers are in item 9.
 
 ### [x] `--clearenv`
 
-The host environment no longer leaks into the sandbox. Follow-up in item 7.
+The host environment no longer leaks into the sandbox; variables to keep are
+listed in `envPassthrough`.
 
 ### [x] Dead code in `sandbox/default.nix`
 
@@ -494,7 +502,7 @@ complexity for little benefit.
 2. **Item 1A** (session change report).
 3. **Item 4** (refuse `$HOME` and `/` as the project directory).
 4. **Items 5 and 6** (defaults that widen exposure).
-5. **Items 7 and 8** (environment passthrough; quoting and structured binds).
+5. **Item 8** (structured binds, which also fixes `args` quoting).
 6. **Item 1B** (overlay mode).
 7. **Item 11** (tests), added alongside each of the above.
 8. Everything else.
