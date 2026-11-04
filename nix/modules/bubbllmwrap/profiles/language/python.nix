@@ -1,37 +1,29 @@
-{pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   _file = ./python.nix;
 
   profiles = {
     python = {
-      args = [
-        "--ro-bind-try"
-        "~/.cache/pip"
-        "~/.cache/pip"
-
-        "--ro-bind-try"
-        "~/.cache/pypoetry"
-        "~/.cache/pypoetry"
-
-        "--ro-bind-try"
-        "~/.cache/uv"
-        "~/.cache/uv"
-
-        "--ro-bind-try"
-        "~/.config/pypoetry"
-        "~/.config/pypoetry"
-
-        "--ro-bind-try"
-        "~/.config/uv"
-        "~/.config/uv"
-
-        "--ro-bind-try"
-        "~/.pip"
-        "~/.pip"
-
-        "--ro-bind-try"
-        "~/.pypirc"
-        "~/.pypirc"
-      ];
+      filesystem.mounts = {
+        pip-cache = "~/.cache/pip";
+        poetry-cache = "~/.cache/pypoetry";
+        uv-cache = "~/.cache/uv";
+        # Off by default: `auth.toml` can hold repository credentials.
+        poetry-config = {
+          source = "~/.config/pypoetry";
+          enable = lib.mkDefault false;
+        };
+        uv-config = "~/.config/uv";
+        pip-config = "~/.pip";
+        # Off by default: PyPI upload tokens.
+        pypirc = {
+          source = "~/.pypirc";
+          enable = lib.mkDefault false;
+        };
+      };
 
       packages = with pkgs; [
         python3

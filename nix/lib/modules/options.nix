@@ -8,8 +8,9 @@ moduleWithSystem ({self', ...} @ perSystem: {
     inherit (lib) mkOption types;
 
     extraTypes = lib.fix (final: let
-      # `quote` defaults differ: `args` are shell words by default (profiles
-      # rely on `~` expansion), while `env` values are literal by default.
+      # `quote` defaults differ: `args` (raw bwrap arguments) are shell words by
+      # default, while `env` values are literal by default. Structured mounts
+      # (`filesystem.mounts`) need neither: the launcher expands only `~/`.
       argModule = {
         quoteByDefault,
         quoteDescription,
@@ -74,9 +75,89 @@ moduleWithSystem ({self', ...} @ perSystem: {
           };
         })
       ]);
+
+      # bwrap filesystem operations available to `filesystem.mounts`, with the
+      # number of path arguments each takes.
+      mountArity = {
+        bind = 2;
+        bind-try = 2;
+        dev-bind = 2;
+        dev-bind-try = 2;
+        ro-bind = 2;
+        ro-bind-try = 2;
+        symlink = 2;
+        dir = 1;
+        remount-ro = 1;
+        tmpfs = 1;
+      };
+
+      # Nix paths are converted with `toString`, which does not copy them into
+      # the store (that would publish e.g. a credential file).
+      pathString = types.coercedTo types.path toString types.str;
+
+      mountModule = {
+        name,
+        config,
+        ...
+      }: {
+        options = {
+          enable = mkOption {
+            type = types.bool;
+            default = true;
+            example = false;
+            description = ''
+              Whether to set up this mount.
+            '';
+          };
+
+          type = mkOption {
+            type = types.enum (lib.attrNames mountArity);
+            default = "ro-bind-try";
+            description = ''
+              The {command}`bwrap` option to use, without the leading `--`.
+              `bind*` and `symlink` take a `source` and a `target`; `dir`,
+              `remount-ro`, and `tmpfs` take only a `target`. The `-try`
+              variants do nothing when the source doesn't exist.
+            '';
+          };
+
+          source = mkOption {
+            type = types.nullOr pathString;
+            default = null;
+            example = "~/.cache/go-build";
+            description = ''
+              Host path to mount (for `symlink`, the link's contents). Required
+              by the two-argument types; must be unset for the others. An
+              absolute path, or a path starting with `~/`, which is resolved
+              against the home directory when the sandbox starts. Nothing else
+              is expanded.
+            '';
+          };
+
+          target = mkOption {
+            type = types.coercedTo types.path toString (types.strMatching "(/|~/).*");
+            default =
+              if config.source != null
+              then config.source
+              else throw "filesystem.mounts.${name}: `${config.type}` needs a `target`";
+            defaultText = lib.literalExpression "source";
+            description = ''
+              Path inside the sandbox: an absolute path, or a path starting
+              with `~/`. Defaults to `source`.
+            '';
+          };
+        };
+      };
     in {
       args = types.listOf arg;
       env = types.attrsOf var;
+      inherit mountArity;
+
+      # A plain string or path is shorthand for `{ source = <path>; }`.
+      mounts = types.attrsOf (types.coercedTo
+        (types.either types.str types.path)
+        (source: {source = toString source;})
+        (types.submodule mountModule));
     });
   in {
     _file = ./options.nix;
@@ -242,13 +323,14 @@ moduleWithSystem ({self', ...} @ perSystem: {
               args = mkOption {
                 type = extraTypes.args;
                 default = [];
-                example = [
-                  "--ro-bind-try"
-                  ''"''${PRJ_DATA_DIR}:/data"''
-                ];
+                example = ["--hostname" "sandbox"];
                 description = ''
                   Additional arguments to pass to the bubblewrap
-                  {command}`bwrap` executable.
+                  {command}`bwrap` executable, as shell words (see `quote`).
+
+                  For mounts, use
+                  {option}`environments.<name>.filesystem.mounts` instead: it
+                  quotes paths and lets each mount be switched off.
                 '';
               };
 
@@ -332,6 +414,27 @@ moduleWithSystem ({self', ...} @ perSystem: {
                         config.filesystem.vcsMetadataDirs;
 
                       stateDirs = lib.filter (dir: dir.enable) (lib.attrValues config.filesystem.stateDirs);
+
+                      # Enabled mounts, validated, in order of target so that a
+                      # mount inside another's target comes after it.
+                      mounts = lib.pipe config.filesystem.mounts [
+                        (lib.filterAttrs (_: mount: mount.enable))
+                        (lib.mapAttrsToList (label: mount: let
+                          where = "environments.${config.name}.filesystem.mounts.${label}";
+                          arity = extraTypes.mountArity.${mount.type};
+                        in
+                          if arity == 2 && mount.source == null
+                          then throw "${where}: `${mount.type}` needs a `source`"
+                          else if arity == 1 && mount.source != null
+                          then throw "${where}: `${mount.type}` takes no `source`"
+                          else if mount.type != "symlink" && arity == 2 && builtins.match "(/|~/).*" mount.source == null
+                          then throw "${where}: `source` must be absolute or start with `~/`, not `${mount.source}`"
+                          else {
+                            inherit (mount) type target;
+                            source = lib.optionalString (mount.source != null) mount.source;
+                          }))
+                        (lib.sort (a: b: a.target < b.target))
+                      ];
                     };
 
                   withProxy = pkgs.writers.writeBashBin (lib.getName withoutProxy) {} ''
@@ -609,6 +712,62 @@ moduleWithSystem ({self', ...} @ perSystem: {
                         Recognition is by name and resolved at runtime, so
                         nested repositories, submodules, and linked worktrees
                         are all covered by the same rule.
+                      '';
+                    };
+
+                    mounts = mkOption {
+                      type = extraTypes.mounts;
+                      default = {};
+                      example = lib.literalExpression ''
+                        {
+                          # Shorthand: read-only, optional, same path inside.
+                          notes = "~/notes";
+
+                          # Switch off a mount that a profile sets up.
+                          go-build-cache.enable = false;
+
+                          # Switch on one that a profile leaves off.
+                          aws.enable = true;
+
+                          data = {
+                            type = "bind";
+                            source = "/srv/data";
+                            target = "/data";
+                          };
+
+                          scratch = {
+                            type = "tmpfs";
+                            target = "/scratch";
+                          };
+                        }
+                      '';
+                      description = ''
+                        Host paths and other {command}`bwrap` filesystem
+                        operations to set up in the sandbox, by label. Every
+                        entry can be switched on or off on its own with
+                        `enable`, so mounts that profiles set up can be
+                        disabled, or enabled, one at a time.
+
+                        A plain string or path is shorthand for
+                        `{ source = <path>; }`: an optional, read-only bind of
+                        that host path at the same place inside the sandbox
+                        (`--ro-bind-try`). Paths may start with `~/`, which is
+                        resolved against the home directory when the sandbox
+                        starts; nothing else is expanded, so paths may contain
+                        spaces or shell metacharacters.
+
+                        Mounts are applied after
+                        {option}`environments.<name>.args`, in order of
+                        `target`, so a mount inside another's target comes after
+                        it.
+
+                        The built-in profiles leave mounts of files that
+                        commonly hold credentials (such as `~/.npmrc` or
+                        `~/.aws`) disabled. Read-only stops the sandbox from
+                        changing them, not from reading them, and anything it
+                        reads can leave through an allowlisted host, the model
+                        provider included. Enable only what you need, and
+                        prefer narrowly scoped, short-lived credentials.
                       '';
                     };
 

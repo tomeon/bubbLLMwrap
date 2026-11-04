@@ -3,19 +3,11 @@
 
   profiles = {
     go = {
-      args = [
-        "--ro-bind-try"
-        "~/go/pkg/mod"
-        "~/go/pkg/mod"
-
-        "--ro-bind-try"
-        "~/.cache/go-build"
-        "~/.cache/go-build"
-
-        "--ro-bind-try"
-        "~/.config/go"
-        "~/.config/go"
-      ];
+      filesystem.mounts = {
+        go-mod-cache = "~/go/pkg/mod";
+        go-build-cache = "~/.cache/go-build";
+        go-config = "~/.config/go";
+      };
 
       packages = with pkgs; [
         go

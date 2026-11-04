@@ -53,6 +53,20 @@
 
       packages = with pkgs; [curl];
 
+      filesystem.mounts = {
+        # Shorthand string; the path contains a space. Created by testScript.
+        test-shorthand = "/tmp/bubbllmwrap mount test";
+        test-disabled = {
+          source = "/etc/hostname";
+          target = "/srv/should-not-exist";
+          enable = false;
+        };
+        test-tmpfs = {
+          type = "tmpfs";
+          target = "/srv/scratch";
+        };
+      };
+
       env = {
         TEST_VAR_SIMPLE = "simple-value";
         TEST_VAR_WITH_SPACE = "value with spaces";
@@ -126,6 +140,22 @@
                   err "TERM was not passed through: ''${TERM-<unset>}"
                 fi
               ''}
+
+              if [[ "$(cat '/tmp/bubbllmwrap mount test/file' 2>/dev/null)" != mounted ]]; then
+                err "shorthand mount (a path with a space) is missing"
+              fi
+
+              if touch '/tmp/bubbllmwrap mount test/new' 2>/dev/null; then
+                err "shorthand mount is writable; it should be read-only"
+              fi
+
+              if [[ -e /srv/should-not-exist ]]; then
+                err "a disabled mount was set up"
+              fi
+
+              if ! touch /srv/scratch/probe 2>/dev/null; then
+                err "tmpfs mount is missing or not writable"
+              fi
 
               if (cd /nope) &>/dev/null; then
                 err "changing directory to forbidden path /nope is possible but should not be"
@@ -242,6 +272,7 @@ in
       machine.wait_until_succeeds("curl -f -s -S -L -m 5 http://${blockedHost}/")
 
       # Create test project
+      machine.succeed("mkdir -p '/tmp/bubbllmwrap mount test' && echo mounted > '/tmp/bubbllmwrap mount test/file'")
       machine.succeed("mkdir -p /tmp/test-project/.git/hooks")
       machine.succeed("echo 'test content' > /tmp/test-project/test.txt")
 

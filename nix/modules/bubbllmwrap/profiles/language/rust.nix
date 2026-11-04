@@ -1,29 +1,28 @@
-{pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   _file = ./rust.nix;
 
   profiles = {
     rust = {
-      args = [
-        "--ro-bind-try"
-        "~/.cargo/registry"
-        "~/.cargo/registry"
-
-        "--ro-bind-try"
-        "~/.cargo/git"
-        "~/.cargo/git"
-
-        "--ro-bind-try"
-        "~/.cargo/config"
-        "~/.cargo/config"
-
-        "--ro-bind-try"
-        "~/.cargo/config.toml"
-        "~/.cargo/config.toml"
-
-        "--ro-bind-try"
-        "~/.cargo/credentials"
-        "~/.cargo/credentials"
-      ];
+      filesystem.mounts = {
+        cargo-registry = "~/.cargo/registry";
+        cargo-git = "~/.cargo/git";
+        cargo-config = "~/.cargo/config";
+        cargo-config-toml = "~/.cargo/config.toml";
+        # Off by default: crates.io tokens (older file name).
+        cargo-credentials = {
+          source = "~/.cargo/credentials";
+          enable = lib.mkDefault false;
+        };
+        # Off by default: crates.io tokens.
+        cargo-credentials-toml = {
+          source = "~/.cargo/credentials.toml";
+          enable = lib.mkDefault false;
+        };
+      };
 
       packages = with pkgs; [
         rustc

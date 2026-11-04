@@ -33,10 +33,9 @@ that this project would have to keep up to date.
       check, builds the non-VM ones, and skips the VM test with a warning.
 - [ ] **Decide on item 17** (logging in inside the sandbox), since the
       `claude-code` and `codex` profiles no longer share the host's login.
-- [ ] **Decide on item 5** (credential binds), which GitHub Advanced Security
-      also flagged on the PR, and whether this flake's own `pkgs` should allow
-      the unfree `claude-code` package (CodeRabbit's suggestion; today users
-      set `NIXPKGS_ALLOW_UNFREE=1` and pass `--impure`, as the README says).
+- [ ] **Decide** whether this flake's own `pkgs` should allow the unfree
+      `claude-code` package (CodeRabbit's suggestion; today users set
+      `NIXPKGS_ALLOW_UNFREE=1` and pass `--impure`, as the README says).
 
 Everything else that was listed here is done; see [Completed](#completed).
 
@@ -153,30 +152,20 @@ easy to do by accident, because the project defaults to `$PWD`. After
 resolving symlinks, refuse `/`, `$HOME`, and any ancestor of `$HOME` unless the
 user passes an explicit override flag.
 
-### [ ] 5. Canned profiles mount publishing credentials — **medium**
+### [~] 5. Credentials in the sandbox — **medium**
 
-_(GitHub Advanced Security flagged the same binds on the PR, also noting
-`~/.yarnrc`, `~/.yarnrc.yml`, and `~/.config/containers`, and that anything the
-CLI reads ends up with the model provider.)_
+Done: profiles mount host paths through `filesystem.mounts`, one labelled
+entry per path, and the entries for files that commonly hold credentials are
+off by default (`enable = lib.mkDefault false`): `~/.npmrc`, `~/.yarnrc`,
+`~/.yarnrc.yml`, `~/.config/{npm,pnpm}`, `~/.config/nix` (`access-tokens`),
+`~/.config/pypoetry` (`auth.toml`), `~/.pypirc`,
+`~/.cargo/credentials{,.toml}`, `~/.aws`, `~/.kube`, `~/.docker`,
+`~/.terraform.d`, and `~/.config/{containers,helm}`. Users switch each one on
+by label; the README lists them. GitHub Advanced Security had flagged these
+binds on the PR.
 
-Several profiles bind credential files read-only by default:
-
-- `~/.cargo/credentials` (`profiles/language/rust.nix:23-25`)
-- `~/.pypirc` (`profiles/language/python.nix:31-33`)
-- `~/.npmrc` (`profiles/language/js.nix:27-29`)
-- `~/.aws`, `~/.kube`, and `~/.docker` (`profiles/tooling/devops.nix`)
-
-The proxy limits where these can be sent. But the obvious way to make these
-profiles useful is to allowlist the registry (`registry.npmjs.org`,
-`upload.pypi.org`, `crates.io`), and at that point an injected agent can
-publish packages as the user. This exposure comes from the project's own
-defaults rather than from anything users configure. The README's security
-model now mentions it.
-
-Make credential binds opt-in, either as a per-profile sub-option or as
-structured binds that are off by default (item 8). Keep caches and non-secret
-config on by default. Two details: `~/.npmrc` holds both registry config and
-tokens, and current cargo uses `credentials.toml`.
+Remaining: ways to give tools what they need without the secret entering the
+sandbox at all.
 
 **Options considered.** Read-only binds stop tampering, not reading, and
 reading is the risk: whatever the CLI reads can leave through any allowlisted
@@ -205,31 +194,31 @@ to keep the secret on the host and give the sandbox narrower access instead:
   entirely, but doesn't cover request signing (AWS SigV4) or client
   certificates.
 
-Until then: opt-in, read-only binds, and the README should recommend
-narrowly scoped, short-lived tokens for anything bound.
+Until then: per-mount opt-in, read-only binds (done), and the README
+recommends narrowly scoped, short-lived tokens for anything switched on.
 
-### [~] 8. `args` quoting is unsafe by default — **medium**
+### [~] 8. `args` quoting is unsafe by default — **low**
 
 Done:
 
+- `filesystem.mounts.<label>`, a set of submodules
+  (`{ enable; type; source; target; }`, or a plain string/path as shorthand
+  for a read-only optional bind), replaces hand-written `--ro-bind-try`
+  triples. The launcher quotes everything and expands only a leading `~/`;
+  each mount can be switched off individually; mounts are applied in target
+  order. The profiles use it.
 - `env` values are now literal by default (`quote = true`); shell syntax is
   the opt-in (`{ value; quote = false; }`).
 - `claude-code.nix` used `lib.escapeRegex` to shell-escape
   `--disallowedTools`, which split rules containing spaces; it now uses
   `lib.escapeShellArg`.
 
-Remaining: plain-string `args` still default to `quote = false` and are
-spliced unquoted into a bash array literal (`sandbox/default.nix:100`), so an
-argument containing a space becomes two arguments. They were left alone because
-the profiles rely on `~` expansion in bind paths, and flipping the default
-would silently turn every `--ro-bind-try ~/...` into a no-op. The better fix:
-
-- Add a structured `binds` option: an attrset keyed by path, with entries like
-  `{ source; mode = "ro" | "rw"; optional = true; enable = true; }`. The
-  generator emits correctly quoted arguments and does the `$HOME` expansion
-  itself. Profiles stop writing argument triples by hand. Users can disable one
-  inherited bind (`binds."~/.aws".enable = false`) instead of `mkForce`-ing the
-  whole `args` list, and item 5 follows directly.
+Remaining: plain-string `args` (raw `bwrap` arguments) still default to
+`quote = false` and are spliced unquoted into a bash array literal
+(`sandbox/default.nix:101`), so an argument containing a space becomes two.
+With mounts no longer going through `args`, flipping its default to literal
+is now cheap; consider it. `filesystem.mounts` could also grow more `bwrap`
+operations (`chmod`, `overlay`, `--perms`/`--size` modifiers) when needed.
 
 ### [~] 9. Proxy: remaining issues — **low**
 
@@ -563,8 +552,8 @@ complexity for little benefit.
 1. **The "Before merging" list** (first CI run; item 17).
 2. **Item 1A** (session change report).
 3. **Item 4** (refuse `$HOME` and `/` as the project directory).
-4. **Item 5** (credential binds, a default that widens exposure).
-5. **Item 8** (structured binds, which also fixes `args` quoting).
+4. **Item 5** (credential proxies, so secrets can stay on the host).
+5. **Item 8** (literal-by-default `args`).
 6. **Item 1B** (overlay mode).
 7. **Item 11** (tests), added alongside each of the above.
 8. Everything else.

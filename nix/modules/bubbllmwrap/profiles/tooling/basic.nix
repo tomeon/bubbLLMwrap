@@ -7,19 +7,11 @@
 
   profiles = {
     basic-tooling = {
-      args = [
-        "--ro-bind-try"
-        "~/.gitconfig"
-        "~/.gitconfig"
-
-        "--ro-bind-try"
-        "~/.config/git"
-        "~/.config/git"
-
-        "--ro-bind-try"
-        "~/.config/jj"
-        "~/.config/jj"
-      ];
+      filesystem.mounts = {
+        gitconfig = "~/.gitconfig";
+        git-config = "~/.config/git";
+        jj-config = "~/.config/jj";
+      };
 
       packages = with pkgs;
         lib.filter (p: p.meta.supported or true) [

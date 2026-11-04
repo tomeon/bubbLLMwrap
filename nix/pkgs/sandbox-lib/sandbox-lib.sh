@@ -366,6 +366,55 @@ __sandbox_project_symlink_in_path() {
 
 declare -fr __sandbox_project_symlink_in_path
 
+# Print a path from the module config with a leading `~/` (or a bare `~`)
+# resolved against the given home directory; anything else is printed as is.
+__sandbox_expand_home() {
+  local home="${1?}" path="${2?}"
+
+  # A literal `~` is what we're matching, so no tilde expansion.
+  # shellcheck disable=SC2088
+  case "$path" in
+  '~') printf '%s\n' "$home" ;;
+  '~/'*) printf '%s\n' "${home}/${path#'~/'}" ;;
+  *) printf '%s\n' "$path" ;;
+  esac
+}
+
+declare -fr __sandbox_expand_home
+
+# Turn `filesystem.mounts` into bwrap arguments.
+#
+# Expects `__sandbox_mounts` (from the generated vars script) to hold
+# type/source/target triples, already validated and ordered by the module; the
+# source is empty for types that take only a target. Paths starting with `~/`
+# are resolved against the given home directory, and nothing else is expanded.
+#
+# Populates the global `__sandbox_mount_args` array.
+__sandbox_add_mount_args() {
+  local home="${1?}"
+
+  declare -ga __sandbox_mount_args
+  __sandbox_mount_args=()
+
+  [[ -v __sandbox_mounts ]] || return 0
+
+  local i type src dest
+  for ((i = 0; i + 2 < ${#__sandbox_mounts[@]}; i += 3)); do
+    type="${__sandbox_mounts[i]}"
+    src="${__sandbox_mounts[i + 1]}"
+    dest="$(__sandbox_expand_home "$home" "${__sandbox_mounts[i + 2]}")"
+
+    if [[ -n $src ]]; then
+      src="$(__sandbox_expand_home "$home" "$src")"
+      __sandbox_mount_args+=("--${type}" "$src" "$dest")
+    else
+      __sandbox_mount_args+=("--${type}" "$dest")
+    fi
+  done
+}
+
+declare -fr __sandbox_add_mount_args
+
 # Bind sandbox-owned persistent directories (an LLM CLI's config and login
 # state, say) from the host into the sandbox, instead of sharing the host's own
 # copies. Anything the sandbox writes there stays out of the host tool's config.
@@ -394,16 +443,11 @@ __sandbox_add_state_dir_args() {
     name="${__sandbox_state_dirs[i]}"
     target="${__sandbox_state_dirs[i + 1]}"
 
-    # A literal `~/` prefix is what we're matching, so no tilde expansion.
-    # shellcheck disable=SC2088
-    case "$target" in
-    '~/'*) target="${home}/${target#'~/'}" ;;
-    /*) ;;
-    *)
+    target="$(__sandbox_expand_home "$home" "$target")"
+    if [[ $target != /* ]]; then
       printf 1>&2 -- 'Error: state directory target %q must be absolute or start with ~/\n' "$target"
       return 1
-      ;;
-    esac
+    fi
 
     src="${state_root}/${name}"
     if ! [[ -d $src ]]; then

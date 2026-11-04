@@ -83,7 +83,11 @@ list of package
 
 
 Additional arguments to pass to the bubblewrap
-` bwrap ` executable\.
+` bwrap ` executable, as shell words (see ` quote `)\.
+
+For mounts, use
+` environments.<name>.filesystem.mounts ` instead: it
+quotes paths and lets each mount be switched off\.
 
 
 
@@ -104,8 +108,8 @@ list of ((submodule) or string convertible to it)
 
 ```nix
 [
-  "--ro-bind-try"
-  "\"\${PRJ_DATA_DIR}:/data\""
+  "--hostname"
+  "sandbox"
 ]
 ```
 
@@ -433,6 +437,204 @@ boolean
 
 ```nix
 true
+```
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.filesystem\.mounts
+
+
+
+Host paths and other ` bwrap ` filesystem
+operations to set up in the sandbox, by label\. Every
+entry can be switched on or off on its own with
+` enable `, so mounts that profiles set up can be
+disabled, or enabled, one at a time\.
+
+A plain string or path is shorthand for
+` { source = <path>; } `: an optional, read-only bind of
+that host path at the same place inside the sandbox
+(` --ro-bind-try `)\. Paths may start with ` ~/ `, which is
+resolved against the home directory when the sandbox
+starts; nothing else is expanded, so paths may contain
+spaces or shell metacharacters\.
+
+Mounts are applied after
+` environments.<name>.args `, in order of
+` target `, so a mount inside another’s target comes after
+it\.
+
+The built-in profiles leave mounts of files that
+commonly hold credentials (such as ` ~/.npmrc ` or
+` ~/.aws `) disabled\. Read-only stops the sandbox from
+changing them, not from reading them, and anything it
+reads can leave through an allowlisted host, the model
+provider included\. Enable only what you need, and
+prefer narrowly scoped, short-lived credentials\.
+
+
+
+*Type:*
+attribute set of ((submodule) or (string or absolute path) convertible to it)
+
+
+
+*Default:*
+
+```nix
+{ }
+```
+
+
+
+*Example:*
+
+```nix
+{
+  # Shorthand: read-only, optional, same path inside.
+  notes = "~/notes";
+
+  # Switch off a mount that a profile sets up.
+  go-build-cache.enable = false;
+
+  # Switch on one that a profile leaves off.
+  aws.enable = true;
+
+  data = {
+    type = "bind";
+    source = "/srv/data";
+    target = "/data";
+  };
+
+  scratch = {
+    type = "tmpfs";
+    target = "/scratch";
+  };
+}
+
+```
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.filesystem\.mounts\.\<name>\.enable
+
+
+
+Whether to set up this mount\.
+
+
+
+*Type:*
+boolean
+
+
+
+*Default:*
+
+```nix
+true
+```
+
+
+
+*Example:*
+
+```nix
+false
+```
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.filesystem\.mounts\.\<name>\.source
+
+
+
+Host path to mount (for ` symlink `, the link’s contents)\. Required
+by the two-argument types; must be unset for the others\. An
+absolute path, or a path starting with ` ~/ `, which is resolved
+against the home directory when the sandbox starts\. Nothing else
+is expanded\.
+
+
+
+*Type:*
+null or (string or absolute path convertible to it)
+
+
+
+*Default:*
+
+```nix
+null
+```
+
+
+
+*Example:*
+
+```nix
+"~/.cache/go-build"
+```
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.filesystem\.mounts\.\<name>\.target
+
+
+
+Path inside the sandbox: an absolute path, or a path starting
+with ` ~/ `\. Defaults to ` source `\.
+
+
+
+*Type:*
+string matching the pattern (/|~/)\.\* or absolute path convertible to it
+
+
+
+*Default:*
+
+```nix
+source
+```
+
+*Declared by:*
+ - [nix/lib/modules/options\.nix](../nix/lib/modules/options.nix)
+
+
+
+## environments\.\<name>\.filesystem\.mounts\.\<name>\.type
+
+
+
+The ` bwrap ` option to use, without the leading ` -- `\.
+` bind* ` and ` symlink ` take a ` source ` and a ` target `; ` dir `,
+` remount-ro `, and ` tmpfs ` take only a ` target `\. The ` -try `
+variants do nothing when the source doesn’t exist\.
+
+
+
+*Type:*
+one of “bind”, “bind-try”, “dev-bind”, “dev-bind-try”, “dir”, “remount-ro”, “ro-bind”, “ro-bind-try”, “symlink”, “tmpfs”
+
+
+
+*Default:*
+
+```nix
+"ro-bind-try"
 ```
 
 *Declared by:*

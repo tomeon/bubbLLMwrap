@@ -1,4 +1,8 @@
-{pkgs, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   _file = ./nix.nix;
 
   profiles = {
@@ -8,15 +12,14 @@
       # disabled the CLI could then have the daemon build or substitute, with
       # network access outside the proxy. (With seccomp enabled, `AF_UNIX`
       # sockets are blocked anyway.) Bind it yourself if you accept that.
-      args = [
-        "--ro-bind-try"
-        "/etc/nix"
-        "/etc/nix"
-
-        "--ro-bind-try"
-        "~/.config/nix"
-        "~/.config/nix"
-      ];
+      filesystem.mounts = {
+        etc-nix = "/etc/nix";
+        # Off by default: `nix.conf` often holds `access-tokens`.
+        nix-config = {
+          source = "~/.config/nix";
+          enable = lib.mkDefault false;
+        };
+      };
 
       packages = with pkgs; [
         nix

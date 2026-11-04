@@ -94,8 +94,13 @@ environment, import the same profiles.
   `{ value; quote; }` submodule. `quote = true` passes the value literally;
   `quote = false` inserts it into the launcher as shell syntax (e.g. `~` or
   `$VAR`, expanded on the host). The defaults differ: `env` values are literal
-  (`quote = true`), while `args` are shell syntax (`quote = false`) because
-  profiles rely on `~` expansion in bind paths.
+  (`quote = true`), while `args` (raw `bwrap` arguments) are shell syntax
+  (`quote = false`).
+- `filesystem.mounts.<label>` is the structured way to mount host paths: a
+  submodule `{ enable; type; source; target; }` (type defaults to
+  `ro-bind-try`, target to source), or a plain string/path as shorthand for
+  `{ source = <path>; }`. The launcher expands only a leading `~/`. Mounts are
+  applied after `args`, ordered by target.
 - `envPassthrough` names host variables kept across `--clearenv`;
   `basic-tooling` passes `TERM`/`COLORTERM` and sets `LANG=C.UTF-8`.
 - `hooks.{pre,post}` run on the host before/after `bwrap`; `hooks.{enter,exit}`
@@ -163,7 +168,10 @@ Do not hand-edit `docs/OPTIONS.md` (it is also excluded from prettier).
 - New profiles go under `nix/modules/bubbllmwrap/profiles/<group>/<name>.nix`
   and are auto-discovered by `canned.nix` — add the name to the `language`/`llm`
   lists in `canned.nix` if it should participate in the canned cross-product.
-- Read-only cache/config binds use `--ro-bind-try` so a missing host path is not
-  an error.
+- Profiles mount host paths with `filesystem.mounts.<label> = "<path>";`
+  (read-only, and a missing path is not an error). Mounts of files that
+  commonly hold credentials use `enable = lib.mkDefault false`, so users can
+  switch each one on with a plain `enable = true`. The README's "Mounted host
+  paths" table lists them all.
 - See `docs/HACKING.md` for contributor workflows and `TODO.md` for the threat
   model and planned hardening work.

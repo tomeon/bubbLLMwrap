@@ -68,7 +68,9 @@ if ! [[ -v __sandbox_bwrap_args ]]; then
   declare -ar __sandbox_bwrap_args=()
 fi
 
-# Sandbox-owned persistent directories (e.g. LLM config and login state).
+# `filesystem.mounts`, then sandbox-owned persistent directories (e.g. LLM
+# config and login state).
+__sandbox_add_mount_args "$home" || exit
 __sandbox_add_state_dir_args "$home" || exit
 
 # Read-only binds that lock version-control metadata roots under the project.
@@ -128,6 +130,7 @@ bwrap \
   --clearenv \
   "${__sandbox_seccomp_args[@]}" \
   "${__sandbox_bwrap_args[@]}" \
+  "${__sandbox_mount_args[@]}" \
   "${__sandbox_state_args[@]}" \
   --bind "$__sandbox_project_dir_real" "$__sandbox_project_dir" \
   "${__sandbox_deny_args[@]}" \

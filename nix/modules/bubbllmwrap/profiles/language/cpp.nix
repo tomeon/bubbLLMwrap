@@ -3,15 +3,10 @@
 
   profiles = {
     cpp = {
-      args = [
-        "--ro-bind-try"
-        "~/.cache/ccache"
-        "~/.cache/ccache"
-
-        "--ro-bind-try"
-        "~/.ccache"
-        "~/.ccache"
-      ];
+      filesystem.mounts = {
+        ccache = "~/.cache/ccache";
+        ccache-legacy = "~/.ccache";
+      };
 
       packages = with pkgs; [
         ccache

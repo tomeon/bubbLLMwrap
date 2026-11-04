@@ -24,6 +24,7 @@
   llmArgs,
   vcsMetadataDirs ? [],
   stateDirs ? [],
+  mounts ? [],
   envPassthrough ? [],
   applySeccomp ? true,
   denyTerminalInjection ? true,
@@ -126,6 +127,12 @@
     fi
 
     declare -r __sandbox_bwrap_args
+
+    # Type/source/target triples for `filesystem.mounts`, in order; the source
+    # is empty for types that take only a target.
+    declare -ar __sandbox_mounts=(
+      ${lib.escapeShellArgs (lib.concatMap (mount: [mount.type mount.source mount.target]) mounts)}
+    )
 
     # Name/target pairs for sandbox-owned persistent directories.
     declare -ar __sandbox_state_dirs=(

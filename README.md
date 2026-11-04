@@ -131,20 +131,84 @@ Built-ins:
 Both build on `basic-tooling`, which provides: bash, coreutils, curl,
 diffutils, dnsutils, fd, file, findutils, gawk, getent, git, gnugrep, gnused,
 gnutar, gzip, iproute2, jq, jujutsu, less, man, patch, procps, ripgrep, rsync,
-tree, unzip, util-linux, vim, which, yq, zip — and read-only binds for
-`~/.gitconfig`, `~/.config/git`, and `~/.config/jj`.
+tree, unzip, util-linux, vim, which, yq, zip — and read-only mounts of
+`~/.gitconfig`, `~/.config/git`, and `~/.config/jj` (see
+[Mounted host paths](#mounted-host-paths)).
 
 ### Language / tooling profiles
 
-| Profile  | Tools                                                                             | Cache binds (read-only)                                                                               |
-| -------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `nix`    | nix, alejandra                                                                    | `/etc/nix`, `~/.config/nix` (not `/nix/var/nix`, which holds the daemon socket)                       |
-| `go`     | go, gopls, delve, golangci-lint, gotools, gofumpt                                 | `~/go/pkg/mod`, `~/.cache/go-build`, `~/.config/go`                                                   |
-| `python` | python3, pip, virtualenv, poetry, ruff, pyright, uv                               | `~/.cache/{pip,pypoetry,uv}`, `~/.config/{pypoetry,uv}`, `~/.pip`, `~/.pypirc`                        |
-| `rust`   | rustc, cargo, rustfmt, clippy, rust-analyzer                                      | `~/.cargo/{registry,git,config,config.toml,credentials}`                                              |
-| `cpp`    | ccache, gcc, clang, cmake, gnumake, clang-tools                                   | `~/.cache/ccache`, `~/.ccache`                                                                        |
-| `js`     | nodejs, yarn, pnpm, bun, typescript, typescript-language-server, eslint, prettier | `~/.npm`, `~/.yarn`, `~/.cache/yarn`, `~/.local/share/pnpm`, `~/.bun`, npm/yarn/pnpm rc & config dirs |
-| `devops` | podman, kubernetes-helm, kubectl, opentofu, pgcli, cloudflared                    | `~/.kube`, `~/.aws`, `~/.cache/helm`, `~/.terraform.d`, `~/.docker`, `~/.config/{containers,helm}`    |
+| Profile  | Tools                                                                             |
+| -------- | --------------------------------------------------------------------------------- |
+| `nix`    | nix, alejandra                                                                    |
+| `go`     | go, gopls, delve, golangci-lint, gotools, gofumpt                                 |
+| `python` | python3, pip, virtualenv, poetry, ruff, pyright, uv                               |
+| `rust`   | rustc, cargo, rustfmt, clippy, rust-analyzer                                      |
+| `cpp`    | ccache, gcc, clang, cmake, gnumake, clang-tools                                   |
+| `js`     | nodejs, yarn, pnpm, bun, typescript, typescript-language-server, eslint, prettier |
+| `devops` | podman, kubernetes-helm, kubectl, opentofu, pgcli, cloudflared                    |
+
+### Mounted host paths
+
+Profiles mount host paths read-only through
+[`filesystem.mounts`](docs/OPTIONS.md), one labelled entry per path, using
+`--ro-bind-try` (a missing path is skipped). Paths that commonly hold
+credentials are **off** by default: read-only stops the sandbox from changing
+them, not from reading them, and what it reads can leave through any
+allowlisted host, the model provider included. Switch any entry on or off by
+its label:
+
+```nix
+environments.codex-devops = {
+  filesystem.mounts.aws.enable = true; # off by default
+  filesystem.mounts.helm-cache.enable = false; # on by default
+};
+```
+
+Prefer narrowly scoped, short-lived credentials for anything you switch on.
+
+| Profile         | Label                    | Host path                   | Default |
+| --------------- | ------------------------ | --------------------------- | ------- |
+| `basic-tooling` | `git-config`             | `~/.config/git`             | on      |
+| `basic-tooling` | `jj-config`              | `~/.config/jj`              | on      |
+| `basic-tooling` | `gitconfig`              | `~/.gitconfig`              | on      |
+| `nix`           | `etc-nix`                | `/etc/nix`                  | on      |
+| `nix`           | `nix-config`             | `~/.config/nix`             | **off** |
+| `go`            | `go-build-cache`         | `~/.cache/go-build`         | on      |
+| `go`            | `go-config`              | `~/.config/go`              | on      |
+| `go`            | `go-mod-cache`           | `~/go/pkg/mod`              | on      |
+| `python`        | `pip-cache`              | `~/.cache/pip`              | on      |
+| `python`        | `poetry-cache`           | `~/.cache/pypoetry`         | on      |
+| `python`        | `uv-cache`               | `~/.cache/uv`               | on      |
+| `python`        | `uv-config`              | `~/.config/uv`              | on      |
+| `python`        | `pip-config`             | `~/.pip`                    | on      |
+| `python`        | `poetry-config`          | `~/.config/pypoetry`        | **off** |
+| `python`        | `pypirc`                 | `~/.pypirc`                 | **off** |
+| `rust`          | `cargo-config`           | `~/.cargo/config`           | on      |
+| `rust`          | `cargo-config-toml`      | `~/.cargo/config.toml`      | on      |
+| `rust`          | `cargo-git`              | `~/.cargo/git`              | on      |
+| `rust`          | `cargo-registry`         | `~/.cargo/registry`         | on      |
+| `rust`          | `cargo-credentials`      | `~/.cargo/credentials`      | **off** |
+| `rust`          | `cargo-credentials-toml` | `~/.cargo/credentials.toml` | **off** |
+| `cpp`           | `ccache`                 | `~/.cache/ccache`           | on      |
+| `cpp`           | `ccache-legacy`          | `~/.ccache`                 | on      |
+| `js`            | `bun`                    | `~/.bun`                    | on      |
+| `js`            | `yarn-cache`             | `~/.cache/yarn`             | on      |
+| `js`            | `yarn-config`            | `~/.config/yarn`            | on      |
+| `js`            | `pnpm-store`             | `~/.local/share/pnpm`       | on      |
+| `js`            | `npm-cache`              | `~/.npm`                    | on      |
+| `js`            | `yarn`                   | `~/.yarn`                   | on      |
+| `js`            | `npm-config`             | `~/.config/npm`             | **off** |
+| `js`            | `pnpm-config`            | `~/.config/pnpm`            | **off** |
+| `js`            | `npmrc`                  | `~/.npmrc`                  | **off** |
+| `js`            | `yarnrc`                 | `~/.yarnrc`                 | **off** |
+| `js`            | `yarnrc-yml`             | `~/.yarnrc.yml`             | **off** |
+| `devops`        | `helm-cache`             | `~/.cache/helm`             | on      |
+| `devops`        | `aws`                    | `~/.aws`                    | **off** |
+| `devops`        | `containers-config`      | `~/.config/containers`      | **off** |
+| `devops`        | `helm-config`            | `~/.config/helm`            | **off** |
+| `devops`        | `docker`                 | `~/.docker`                 | **off** |
+| `devops`        | `kube`                   | `~/.kube`                   | **off** |
+| `devops`        | `terraform`              | `~/.terraform.d`            | **off** |
 
 ## Using it in your own flake
 
@@ -262,7 +326,8 @@ Environment options (see the [reference](docs/OPTIONS.md)) include:
 - `packages` — extra packages on `PATH`
 - `env` — environment variables; plain strings are literal, `{ value; quote = false; }` is shell syntax (e.g. `~`, `$VAR`)
 - `envPassthrough` — host environment variables to keep (the sandbox otherwise starts with an empty environment)
-- `args` — extra `bwrap` arguments (e.g. `--ro-bind-try` mounts)
+- `args` — extra raw `bwrap` arguments, as shell words
+- `filesystem.mounts` — labelled mounts of host paths (and other `bwrap` filesystem operations), each switchable on or off; a plain string is a read-only, optional bind
 - `hooks.{pre,enter,exit,post}` — shell run before / inside / after the sandbox
 - `llm.{package,cmd,args,prompt}` — which CLI to run and how
 - `proxy.{enable,allowList,extraConfig,extraRules}` — allowlist HTTP proxy ([glider](https://github.com/nadoo/glider))
@@ -310,9 +375,10 @@ content can steer it.
   for the host shell to run after exit (CVE-2017-5226).
 - **Filesystem** — the sandbox root is a fresh tmpfs, writable but discarded on
   exit. The project directory is mounted read-write. `/nix/store`,
-  `/etc/passwd`, `/etc/group`, and the profiles' config and cache binds are
-  read-only. The LLM's [own config directory](#first-run-logging-in) is
-  read-write. Nothing else from the host is visible.
+  `/etc/passwd`, `/etc/group`, and the profiles'
+  [mounted host paths](#mounted-host-paths) are read-only. The LLM's
+  [own config directory](#first-run-logging-in) is read-write. Nothing else
+  from the host is visible.
 - **Version-control metadata** — every `.git` and `.jj` found under the project
   at launch (including submodule and worktree gitlink files) is mounted
   read-only, so the CLI can't add hooks or change repository config. If one is
@@ -336,10 +402,10 @@ content can steer it.
 - **Telemetry** — disabled for the bundled CLIs.
 
 Not covered: code you later run yourself (build scripts, tests, `flake.nix`) is
-whatever the LLM wrote. Language profiles also bind some credential files
-read-only (`~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, and `~/.aws` etc.
-in `devops`); if you allowlist the matching registry, the CLI can use them. See
-[`TODO.md`](TODO.md) for planned work.
+whatever the LLM wrote. Credential files are mounted only if you switch them on
+(see [Mounted host paths](#mounted-host-paths)); the CLI can then read them,
+and use them against any allowlisted host. See [`TODO.md`](TODO.md) for
+planned work, including ways to keep credentials on the host.
 
 ## Contributing
 
