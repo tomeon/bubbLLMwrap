@@ -4,9 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    claude-code-nix.url = "github:sadjow/claude-code-nix";
-    claude-code-nix.inputs.nixpkgs.follows = "nixpkgs";
-
     flake-parts.url = "github:hercules-ci/flake-parts";
 
     flake-compat.url = "github:nix-community/flake-compat";
@@ -64,12 +61,19 @@
               perSystem = {
                 config,
                 pkgs,
+                system,
                 ...
               }: {
-                # Contributor environment: Codex with this project's dev shell.
-                # Lives in the `dev` partition so that evaluating it doesn't
-                # pull the dev inputs into consumers' evaluations.
                 bubbllmwrap = bwrap: {
+                  # Example of overriding an LLM profile's package: contributors
+                  # get Claude Code from `claude-code-nix` (which tracks releases
+                  # more closely) instead of nixpkgs. The canned profiles set
+                  # `llm.package` with `mkDefault`, so a plain definition wins.
+                  profiles.claude-code.llm.package = inputs.claude-code-nix.packages.${system}.claude-code;
+
+                  # Contributor environment: Codex with this project's dev shell.
+                  # Lives in the `dev` partition so that evaluating it doesn't
+                  # pull the dev inputs into consumers' evaluations.
                   environments.devshellm = lib.const {
                     imports = [bwrap.config.profiles.codex];
                     hooks.enter = "source ${config.devShells.default}/env.bash";
@@ -130,18 +134,7 @@
           };
         };
 
-        perSystem = {
-          config,
-          system,
-          ...
-        }: {
-          # Nixpkgs with the Claude Code overlay. Used for this flake's own
-          # environments and as the default `pkgs` for `lib.<system>.evalSandbox`.
-          _module.args.pkgs = import inputs.nixpkgs {
-            inherit system;
-            overlays = [inputs.claude-code-nix.overlays.default];
-          };
-
+        perSystem = {config, ...}: {
           lib = {
             inherit (config.legacyPackages) evalSandbox;
           };

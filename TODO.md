@@ -178,6 +178,36 @@ structured binds that are off by default (item 8). Keep caches and non-secret
 config on by default. Two details: `~/.npmrc` holds both registry config and
 tokens, and current cargo uses `credentials.toml`.
 
+**Options considered.** Read-only binds stop tampering, not reading, and
+reading is the risk: whatever the CLI reads can leave through any allowlisted
+host, and at the least it reaches the model provider in the transcript. Ways
+to keep the secret on the host and give the sandbox narrower access instead:
+
+- **Kubernetes.** Run `kubectl proxy --unix-socket` on the host, optionally
+  with `--accept-paths`/`--reject-paths`
+  ([docs](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_proxy)),
+  and give the sandbox a kubeconfig that points at it (the socket can be
+  bridged like glider's). The CLI can still act with the user's cluster
+  permissions, but can't take the token away.
+- **AWS.** The CLI and every SDK support the container credential provider
+  (`AWS_CONTAINER_CREDENTIALS_FULL_URI` plus `AWS_CONTAINER_AUTHORIZATION_TOKEN`,
+  [docs](https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html)).
+  `aws-vault exec --ecs-server` serves short-lived credentials from such an
+  endpoint ([usage](https://github.com/99designs/aws-vault/blob/master/USAGE.md)),
+  so the sandbox sees only temporary keys, which a role or session policy can
+  narrow. Alternatively, [aws-sigv4-proxy](https://github.com/awslabs/aws-sigv4-proxy)
+  signs requests on the host, so no AWS key enters the sandbox at all.
+- **Token-in-a-header services** (npm, PyPI, crates.io, GitHub, most APIs).
+  The host-side proxy could add the `Authorization` header for specific hosts.
+  That needs TLS interception with a CA only the sandbox trusts (it already
+  uses a CA bundle we control), which glider can't do, so it means another
+  proxy. It is generic (host → header) and keeps tokens out of the sandbox
+  entirely, but doesn't cover request signing (AWS SigV4) or client
+  certificates.
+
+Until then: opt-in, read-only binds, and the README should recommend
+narrowly scoped, short-lived tokens for anything bound.
+
 ### [~] 8. `args` quoting is unsafe by default — **medium**
 
 Done:
@@ -298,10 +328,10 @@ Done before merge: see [Completed](#completed). Remaining:
 
 ### [ ] 15. Dependency updates — **low**
 
-The removed `update-claude.yml` workflow used to bump Claude Code. Claude Code
-now comes from the `claude-code-nix` input, so it only changes when someone
-updates `flake.lock`. Add a scheduled workflow that updates both `flake.lock`
-and `dev/flake.lock`.
+The removed `update-claude.yml` workflow used to bump Claude Code. The canned
+profiles now take Claude Code from nixpkgs (and the `dev` partition from
+`claude-code-nix`), so it only changes when someone updates `flake.lock` or
+`dev/flake.lock`. Add a scheduled workflow that updates both.
 
 When bumping the `apply-seccomp` pin, note that newer srt releases add a second
 filter that refuses namespace and mount calls
@@ -379,8 +409,8 @@ Fixed:
 
 - the README's "writable" claim and security model (tmpfs root, the VCS lock
   and its limits, state directories, terminal filter, credential binds);
-- the `evalSandbox` overlay claim (now true: the top-level `pkgs` carries the
-  Claude Code overlay);
+- the `evalSandbox` overlay claim (moot now: there is no overlay, and the
+  canned profiles use nixpkgs' `claude-code`);
 - the bare `claude-code`/`codex` environments, which now appear in the README
   and `CLAUDE.md`;
 - the `mkoptdocs` name;
@@ -410,8 +440,12 @@ Fixed:
   environments. `CLAUDE.md`'s example also read `profiles` from the
   environment's own `config`.
 - `dev/flake.nix` declared its own `claude-code-nix`, which replaced the root
-  input inside the `dev` partition (with a separately locked nixpkgs). Removed,
-  along with its lock nodes.
+  input inside the `dev` partition (with a separately locked nixpkgs). Since
+  resolved the other way, on request: the root flake no longer has
+  `claude-code-nix` (canned profiles use nixpkgs' `claude-code`), and the `dev`
+  partition keeps it as a worked example of overriding `llm.package`. Its pin
+  was bumped to the revision the root lock had used, since the old dev pin
+  carried an older Claude Code than nixpkgs.
 - The `seccomp` option's `:::{.note}` was never closed.
 - `makeSandboxScanDir`'s `passthru.install` interpolated `finalAttrs` (not a
   derivation) instead of `finalAttrs.finalPackage`.

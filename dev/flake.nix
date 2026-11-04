@@ -2,6 +2,8 @@
   description = "Private inputs for development of this project";
 
   inputs = {
+    claude-code-nix.url = "github:sadjow/claude-code-nix";
+
     devshell.url = "github:numtide/devshell";
     devshell.inputs.nixpkgs.follows = "";
 

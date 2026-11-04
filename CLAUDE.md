@@ -31,10 +31,12 @@ user-facing concepts are:
 Key files:
 
 - `flake.nix`: flake-parts entrypoint. Declares systems, imports the flake
-  module and packages, sets up `pkgs` (nixpkgs plus the Claude Code overlay),
-  sets up the `dev` partition (dev shell, formatter, checks, and the
-  `devshellm` contributor app), and configures the project's own `bubbllmwrap`
-  environments.
+  module and packages, sets up the `dev` partition (dev shell, formatter,
+  checks, the `devshellm` contributor app, and an example override of the
+  `claude-code` profile's package with `claude-code-nix`, a dev-only input),
+  and configures the project's own `bubbllmwrap` environments. Canned profiles
+  use nixpkgs' `claude-code` and `codex`, set with `mkDefault` so that a plain
+  `llm.package` definition overrides them.
 - `nix/modules/flake/default.nix`: the flake-parts integration module exported
   as `flakeModules.bubbllmwrap` (and `.default`). Adds the `perSystem.bubbllmwrap`
   option and maps each environment to a package output.

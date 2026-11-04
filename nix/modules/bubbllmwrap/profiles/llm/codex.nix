@@ -14,7 +14,8 @@
       imports = [config.profiles.basic-tooling];
 
       llm = {
-        package = pkgs.codex;
+        # `mkDefault` so that users can override it with a plain definition.
+        package = lib.mkDefault pkgs.codex;
 
         # https://developers.openai.com/codex/config-reference
         # https://developers.openai.com/codex/config-schema.json

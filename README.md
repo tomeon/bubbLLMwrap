@@ -198,10 +198,9 @@ output (toggle with `bubbllmwrap.includePackages = false`).
 
 ### Plain flake (no `flake-parts`)
 
-Use `evalSandbox`; an appropriate `pkgs` (bubbLLMwrap's nixpkgs with the Claude
-Code overlay) is supplied for you. Claude Code is unfree, so allow unfree
-packages as described [above](#requirements), or set `_module.args.pkgs` to
-your own nixpkgs instance:
+Use `evalSandbox`; bubbLLMwrap's own nixpkgs is supplied as `pkgs`. Claude
+Code is unfree, so allow unfree packages as described [above](#requirements),
+or set `_module.args.pkgs` to your own nixpkgs instance:
 
 ```nix
 {
@@ -226,6 +225,35 @@ your own nixpkgs instance:
   };
 }
 ```
+
+### Using a different LLM package
+
+The `claude-code` and `codex` profiles take their CLI from nixpkgs
+(`pkgs.claude-code`, `pkgs.codex`) and set it with `mkDefault`, so a plain
+definition replaces it. For example, to run the build from
+[claude-code-nix](https://github.com/sadjow/claude-code-nix), which tracks
+Claude Code releases more closely, in every environment that imports the
+`claude-code` profile:
+
+```nix
+{
+  inputs.claude-code-nix.url = "github:sadjow/claude-code-nix";
+
+  # ...the flake-parts setup shown above...
+
+  perSystem = {inputs', ...}: {
+    bubbllmwrap = {modulesPath, ...}: {
+      imports = [(modulesPath + "/canned.nix")];
+
+      profiles.claude-code.llm.package = inputs'.claude-code-nix.packages.claude-code;
+    };
+  };
+}
+```
+
+To change one environment only, set `environments.<name>.llm.package`
+instead. This repository's `dev` partition (in `flake.nix`) does the same
+for contributors.
 
 ## Customizing environments
 

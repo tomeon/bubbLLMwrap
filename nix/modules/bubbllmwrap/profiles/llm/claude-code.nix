@@ -24,7 +24,9 @@
           "Bash(wget:*)"
         ];
 
-        package = pkgs.claude-code;
+        # `mkDefault` so that users can override it with a plain definition,
+        # e.g. `profiles.claude-code.llm.package = <another claude-code>;`.
+        package = lib.mkDefault pkgs.claude-code;
 
         args = [
           "--dangerously-skip-permissions"
